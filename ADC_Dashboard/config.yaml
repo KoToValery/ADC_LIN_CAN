@@ -1,6 +1,6 @@
-name: "ADC Test Monitoring"
+name: "ADC Test Monitoring_dashboard"
 version: "1.0.2"
-slug: "ADC_github"
+slug: "ADC_github_dashboard"
 description: "Add-on for monitoring ADC"
 arch:
   - armhf
