@@ -1,5 +1,5 @@
 name: "ADC Test Monitoring Dashboard"
-version: "1.0.2"
+version: "1.0.3"
 slug: "adc-dashboard"
 description: "Add-on for monitoring ADC "
 arch:
