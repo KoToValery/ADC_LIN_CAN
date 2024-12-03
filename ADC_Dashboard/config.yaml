@@ -1,6 +1,6 @@
 name: "ADC Test Monitoring_dashboard"
 version: "1.0.2"
-slug: "ADC_github_dashboard"
+slug: "ADC-dashboard"
 description: "Add-on for monitoring ADC"
 arch:
   - armhf
@@ -9,14 +9,6 @@ arch:
   - amd64
   - i386
 startup: "services"
-ingress: false
-#panel_icon: "mdi:chart-line"  
-
-host_network: true
-map:
-  - spi
-  - config
-  - dev
 
 devices:
   - /dev/spidev1.1:/dev/spidev1.1
