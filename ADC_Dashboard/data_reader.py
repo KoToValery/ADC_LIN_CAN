@@ -8,10 +8,9 @@
 # Hardware PCB V3.0
 # Tool: Python 3
 #
-# Version: V01.01.09.2024.CIS3 - temporary 01
-# 1. TestSPI,ADC - work. Measurement Voltage 0-10 V, resistive 0-1000 ohm
-# 2. Test Power PI5V/4.5A - work
-# 3. Test ADC communication - work
+# Version: V01.01.09.2024.CIS3 - temporary 02
+#
+# Description: Enhanced REST API for ADC monitoring with unique request identifiers.
 
 import os
 import time
@@ -19,11 +18,12 @@ import json
 import asyncio
 import threading
 import spidev
-from flask import Flask, jsonify, Response
+import uuid
+from flask import Flask, jsonify, Response, request
 from collections import deque
 
 # Configuration
-HTTP_PORT = 8090
+HTTP_PORT = 8090  # Updated port
 SPI_BUS = 1
 SPI_DEVICE = 1
 SPI_SPEED = 1000000
@@ -97,15 +97,28 @@ def process_channel(channel):
 # HTTP routes
 @app.route('/')
 def dashboard():
-    return jsonify(latest_data)
+    unique_id = str(uuid.uuid4())
+    response_data = {
+        "id": unique_id,
+        "latest_data": latest_data
+    }
+    return jsonify(response_data)
 
 @app.route('/data')
 def data():
-    return jsonify(latest_data)
+    unique_id = str(uuid.uuid4())
+    response_data = {
+        "id": unique_id,
+        "latest_data": latest_data
+    }
+    return jsonify(response_data)
 
 @app.route('/health')
 def health():
-    return Response(status=200)
+    unique_id = str(uuid.uuid4())
+    response = Response(status=200)
+    response.headers["X-Request-ID"] = unique_id
+    return response
 
 # Task 1: Separate the processing of ADC data into its own asynchronous function
 async def process_adc_data():
