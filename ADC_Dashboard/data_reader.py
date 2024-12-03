@@ -23,7 +23,7 @@ from flask import Flask, jsonify, Response
 from collections import deque
 
 # Configuration
-HTTP_PORT = 8099
+HTTP_PORT = 8090
 SPI_BUS = 1
 SPI_DEVICE = 1
 SPI_SPEED = 1000000
