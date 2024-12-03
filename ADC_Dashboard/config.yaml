@@ -9,8 +9,11 @@ arch:
   - amd64
   - i386
 startup: "services"
-options: {}
-schema: {}
+host_network: true
+map:
+  - spi
+  - config
+  - dev
 
 devices:
   - /dev/spidev1.1:/dev/spidev1.1
