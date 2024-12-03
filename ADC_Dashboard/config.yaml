@@ -1,7 +1,7 @@
-name: "ADC Test Monitoring_dashboard"
+name: "ADC Test Monitoring Dashboard"
 version: "1.0.2"
-slug: "ADC-dashboard"
-description: "Add-on for monitoring ADC"
+slug: "adc-dashboard"
+description: "Add-on for monitoring ADC "
 arch:
   - armhf
   - armv7
@@ -9,6 +9,8 @@ arch:
   - amd64
   - i386
 startup: "services"
+options: {}
+schema: {}
 
 devices:
   - /dev/spidev1.1:/dev/spidev1.1
