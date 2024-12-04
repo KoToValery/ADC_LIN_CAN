@@ -1,5 +1,5 @@
 name: "ADC Test Monitoring Dashboard"
-version: "1.0.3"
+version: "1.0.4"
 slug: "adc-dashboard"
 description: "Add-on for monitoring ADC "
 arch:
@@ -14,7 +14,8 @@ map:
   - spi
   - config
   - dev
-
+ports:
+  8091/tcp: 8091  
 devices:
   - /dev/spidev1.1:/dev/spidev1.1
   - /dev/spidev1.0:/dev/spidev1.0
