@@ -28,10 +28,10 @@ class LINMaster:
         p1 = ~(((id_bits >> 1) & 0x01) ^ ((id_bits >> 3) & 0x01) ^ ((id_bits >> 4) & 0x01) ^ ((id_bits >> 5) & 0x01)) & 0x01
         return (id_bits | (p0 << 6) | (p1 << 7))
 
-    def calculate_checksum(self, data, enhanced=False):
-        """Calculate LIN checksum."""
-        checksum = sum(data) & 0xFF
-        return (~checksum) & 0xFF if not enhanced else checksum
+    def calculate_checksum(self, data):
+        """Calculate Enhanced LIN checksum."""
+        checksum = sum(data) & 0xFF  # Sum all data bytes
+        return (~checksum) & 0xFF  # Invert the result
 
     def send_lin_command(self, identifier, command):
         """Send a command frame to a LIN slave."""
@@ -71,3 +71,19 @@ class LINMaster:
         """Control the LED on the slave."""
         command = self.LED_ON_COMMAND if state == "ON" else self.LED_OFF_COMMAND
         return self.send_lin_command(identifier, command)
+
+if __name__ == "__main__":
+    master = LINMaster()
+    slave_id = 0x10
+
+    # Test LED control
+    master.control_led(slave_id, "ON")
+    time.sleep(2)
+    master.control_led(slave_id, "OFF")
+
+    # Test temperature reading
+    temp = master.read_slave_temperature(slave_id)
+    if temp is not None:
+        print(f"Temperature from slave: {temp}°C")
+    else:
+        print("Failed to read temperature from slave.")
