@@ -22,8 +22,8 @@ map:
   - config
   - dev
 options:
-  mqtt_user: ""
-  mqtt_pass: ""
+  mqtt_user: "adc"
+  mqtt_pass: "adc"
 schema:
   mqtt_user: str
   mqtt_pass: str
