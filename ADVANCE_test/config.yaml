@@ -1,0 +1,33 @@
+name: "Advanced ADC & LIN"
+version: "1.0.1"
+slug: "advanced-test"
+description: "Add-on for visualizing ADC and LIN communication with automatic HA discovery"
+arch:
+  - armhf
+  - armv7
+  - aarch64
+  - amd64
+  - i386
+startup: "services"
+ingress: true
+panel_icon: mdi:chip
+panel_title: "ADC & LIN"
+ingress_port: 8099
+ports:
+  8765/tcp: 8765
+homeassistant_api: true
+host_network: true
+map:
+  - spi
+  - config
+  - dev
+options:
+  mqtt_user: ""
+  mqtt_pass: ""
+schema:
+  mqtt_user: str
+  mqtt_pass: str
+devices:
+  - /dev/spidev1.1:/dev/spidev1.1
+  - /dev/spidev1.0:/dev/spidev1.0
+  - /dev/ttyAMA2:/dev/ttyAMA2
