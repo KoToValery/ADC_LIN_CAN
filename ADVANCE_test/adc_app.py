@@ -36,7 +36,7 @@ import struct
 # Logging Setup
 ############################################
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.DEBUG,  # Можете да промените нивото на логване тук (DEBUG, INFO, WARNING, ERROR, CRITICAL)
     format='[%(asctime)s] [%(name)s] %(levelname)s: %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
@@ -102,10 +102,13 @@ quart_log.setLevel(logging.ERROR)
 # SPI Initialization
 ############################################
 spi = spidev.SpiDev()
-spi.open(SPI_BUS, SPI_DEVICE)
-spi.max_speed_hz = SPI_SPEED
-spi.mode = SPI_MODE
-logger.info("SPI interface for ADC initialized.")
+try:
+    spi.open(SPI_BUS, SPI_DEVICE)
+    spi.max_speed_hz = SPI_SPEED
+    spi.mode = SPI_MODE
+    logger.info("SPI interface for ADC initialized.")
+except Exception as e:
+    logger.error(f"SPI initialization error: {e}")
 
 ############################################
 # LINMaster Class (integrated here)
@@ -289,15 +292,22 @@ def apply_ema(value, channel):
 def read_adc(channel):
     if 0 <= channel <= 7:
         cmd = [1, (8 + channel) << 4, 0]
-        adc = spi.xfer2(cmd)
-        value = ((adc[1] & 3) << 8) + adc[2]
-        return value
+        try:
+            adc = spi.xfer2(cmd)
+            value = ((adc[1] & 3) << 8) + adc[2]
+            logger.debug(f"ADC Channel {channel} raw value: {value}")
+            return value
+        except Exception as e:
+            logger.error(f"Error reading ADC channel {channel}: {e}")
+            return 0
+    logger.warning(f"Invalid ADC channel: {channel}")
     return 0
 
 def calculate_voltage(adc_value):
     if adc_value < 10:
         return 0.0
-    return round((adc_value / ADC_RESOLUTION) * VREF * VOLTAGE_MULTIPLIER, 2)
+    voltage = (adc_value / ADC_RESOLUTION) * VREF * VOLTAGE_MULTIPLIER
+    return round(voltage, 2)
 
 def calculate_resistance(adc_value):
     if adc_value <= 10 or adc_value >= (ADC_RESOLUTION - 10):
@@ -331,7 +341,10 @@ async def health():
 mqtt_client = mqtt.Client(protocol=mqtt.MQTTv5)
 if MQTT_USER and MQTT_PASS:
     mqtt_client.username_pw_set(MQTT_USER, MQTT_PASS)
-logger.info(f"Will connect to MQTT with user={MQTT_USER}, pass_length={len(MQTT_PASS)}")
+    logger.debug(f"MQTT credentials set: user='{MQTT_USER}', pass_length={len(MQTT_PASS)}")
+else:
+    logger.warning("MQTT_USER and/or MQTT_PASS not set. Attempting to connect without credentials.")
+
 def on_mqtt_connect(client, userdata, flags, reasonCode, properties=None):
     if reasonCode == 0:
         logger.info("Connected to MQTT Broker!")
@@ -346,6 +359,7 @@ mqtt_client.on_connect = on_mqtt_connect
 mqtt_client.on_disconnect = on_mqtt_disconnect
 
 def mqtt_connect():
+    logger.info(f"Attempting MQTT connect with user='{MQTT_USER}', pass_length={len(MQTT_PASS)}")
     try:
         mqtt_client.connect(MQTT_BROKER, MQTT_PORT, keepalive=60)
         mqtt_client.loop_start()
@@ -518,7 +532,7 @@ async def supervisor_websocket():
         ) as ws:
             await ws.send(json.dumps({"type": "subscribe_events", "event_type": "state_changed"}))
             async for message in ws:
-                pass
+                pass  # Може да добавите обработка на събития тук, ако е необходимо
     except Exception as e:
         logger.error(f"Supervisor WebSocket error: {e}")
 
@@ -533,6 +547,7 @@ async def main():
 
     mqtt_connect()
     logger.info("Initiated MQTT connection.")
+
     while not mqtt_client.is_connected():
         logger.info("Waiting for MQTT connection...")
         await asyncio.sleep(1)
@@ -566,3 +581,4 @@ if __name__ == '__main__':
         spi.close()
         if lin_master.ser:
             lin_master.ser.close()
+        logger.info("ADC & LIN Add-on has been shut down.")
