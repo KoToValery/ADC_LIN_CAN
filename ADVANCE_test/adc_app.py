@@ -10,7 +10,7 @@
 # Features:
 # 1. ADC reading (Voltage channels 0-3, Resistance channels 4-5) - async tasks
 # 2. LIN Communication for LED control & temperature reading (LINMaster class integrated)
-# 3. Quart async web server for data retrieval /health and /data
+# 3. Quart async web server with WebSocket for data retrieval /health and /data
 # 4. Logging with Python logging module
 
 import os
@@ -18,7 +18,7 @@ import time
 import asyncio
 import spidev
 from collections import deque
-from quart import Quart, jsonify, send_from_directory
+from quart import Quart, jsonify, send_from_directory, websocket
 import logging
 import serial
 import struct
@@ -35,7 +35,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger('ADC & LIN')
 
-logger.info("ADC & LIN Add-on started.")
+logger.info("ADC & LIN Advanced Add-on started.")
 
 ############################################
 # Configuration
@@ -51,7 +51,6 @@ ADC_RESOLUTION = 1023.0
 VOLTAGE_MULTIPLIER = 3.31
 RESISTANCE_REFERENCE = 10000
 MOVING_AVERAGE_WINDOW = 10
-EMA_ALPHA = 0.1
 LED_VOLTAGE_THRESHOLD = 3.0
 
 ############################################
@@ -86,6 +85,9 @@ quart_log.setLevel(logging.ERROR)
 # Получаване на абсолютния път до директорията на скрипта
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# Списък с активни WebSocket клиенти
+clients = set()
+
 @app.route('/data')
 async def data():
     return jsonify(latest_data)
@@ -102,6 +104,23 @@ async def index():
     except Exception as e:
         logger.error(f"Error serving index.html: {e}")
         return jsonify({"error": "Index file not found."}), 404
+
+# WebSocket маршрут
+@app.websocket('/ws')
+async def ws():
+    logger.info("New WebSocket connection established.")
+    clients.add(websocket._get_current_object())
+    try:
+        while True:
+            # Поддържане на връзката
+            await websocket.receive()
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+    finally:
+        clients.remove(websocket._get_current_object())
+        logger.info("WebSocket connection closed.")
 
 ############################################
 # SPI Initialization
@@ -144,33 +163,36 @@ class LINMaster:
         if self.ser:
             try:
                 self.ser.break_condition = True
+                logger.debug(f"LINMaster: Sending BREAK condition for {self.BREAK_DURATION} seconds.")
                 time.sleep(self.BREAK_DURATION)
                 self.ser.break_condition = False
                 time.sleep(0.0001)
                 self.ser.write(bytes([self.LIN_SYNC_BYTE]))
                 pid = identifier & 0x3F
                 self.ser.write(bytes([pid]))
-                logger.debug(f"LINMaster sent header with PID: 0x{pid:02X}")
+                logger.debug(f"LINMaster: Sent header with PID: 0x{pid:02X}")
                 return pid
             except Exception as e:
-                logger.error(f"Error sending header: {e}")
+                logger.error(f"LINMaster: Error sending header: {e}")
                 return None
         else:
-            logger.error("UART not initialized, cannot send header.")
+            logger.error("LINMaster: UART not initialized, cannot send header.")
             return None
 
     def control_led(self, identifier, state):
         command = self.LED_ON_COMMAND if state == "ON" else self.LED_OFF_COMMAND
-        logger.info(f"LINMaster sending LED command: {state}")
+        logger.info(f"LINMaster: Sending LED command: {state}")
         try:
             pid = self.send_header(identifier)
             if pid is not None:
                 frame = bytes([command])
                 self.ser.write(frame)
-                logger.debug(f"LINMaster sent data frame for LED: {frame.hex()}")
+                logger.debug(f"LINMaster: Sent data frame for LED: {frame.hex()}")
                 return True
+            else:
+                logger.error("LINMaster: PID not received, LED command not sent.")
         except Exception as e:
-            logger.error(f"Error sending LED command: {e}")
+            logger.error(f"LINMaster: Error sending LED command: {e}")
         return False
 
     def read_temperature(self, identifier):
@@ -179,18 +201,22 @@ class LINMaster:
             if pid is not None:
                 start_time = time.time()
                 response = bytearray()
+                logger.debug(f"LINMaster: Waiting for temperature response with timeout {self.RESPONSE_TIMEOUT} seconds.")
                 while (time.time() - start_time) < self.RESPONSE_TIMEOUT:
                     if self.ser.in_waiting:
                         byte = self.ser.read(1)
                         response.extend(byte)
+                        logger.debug(f"LINMaster: Received byte: {byte.hex()}")
                         if len(response) >= 2:
                             break
                 if len(response) == 2:
                     temperature = int.from_bytes(response, byteorder='little') / 100.0
-                    logger.debug(f"LINMaster read temperature: {temperature:.2f} °C")
+                    logger.debug(f"LINMaster: Read temperature: {temperature:.2f} °C")
                     return temperature
+                else:
+                    logger.warning("LINMaster: Incomplete temperature response received.")
         except Exception as e:
-            logger.error(f"Error reading temperature: {e}")
+            logger.error(f"LINMaster: Error reading temperature: {e}")
         return None
 
 ############################################
@@ -238,11 +264,15 @@ async def process_adc_and_lin():
     while True:
         for i in range(6):
             if i < 4:
-                latest_data["adc_channels"][f"channel_{i}"]["voltage"] = process_adc_data(i)
+                voltage = process_adc_data(i)
+                latest_data["adc_channels"][f"channel_{i}"]["voltage"] = voltage
+                logger.debug(f"ADC Channel {i} Voltage: {voltage} V")
             else:
-                latest_data["adc_channels"][f"channel_{i}"]["resistance"] = process_adc_data(i)
+                resistance = process_adc_data(i)
+                latest_data["adc_channels"][f"channel_{i}"]["resistance"] = resistance
+                logger.debug(f"ADC Channel {i} Resistance: {resistance} Ω")
 
-        # Control LED based on channel 0 voltage
+        # Контролиране на LED въз основа на напрежението на канал 0
         channel_0_voltage = latest_data["adc_channels"]["channel_0"]["voltage"]
         led_state = "ON" if channel_0_voltage > LED_VOLTAGE_THRESHOLD else "OFF"
         success = lin_master.control_led(0x01, led_state)
@@ -252,7 +282,7 @@ async def process_adc_and_lin():
         else:
             logger.warning(f"Failed to send LED {led_state} command.")
 
-        # Read temperature from slave
+        # Четене на температура от слейва
         temperature = lin_master.read_temperature(0x01)
         if temperature is not None:
             latest_data["slave_sensors"]["slave_1"]["value"] = temperature
@@ -260,20 +290,26 @@ async def process_adc_and_lin():
         else:
             logger.warning("Failed to read temperature from slave.")
 
+        # Изпращане на актуализираните данни към всички свързани WebSocket клиенти
+        if clients:
+            data_to_send = jsonify(latest_data).get_data(as_text=True)
+            await asyncio.gather(*(client.send(data_to_send) for client in clients))
+            logger.debug("Sent updated data to WebSocket clients.")
+
         await asyncio.sleep(1)
 
 ############################################
 # Main Function
 ############################################
 async def main():
-    # Start Quart app with Hypercorn
+    # Стартиране на Quart app с Hypercorn
     config = Config()
     config.bind = [f"0.0.0.0:{HTTP_PORT}"]
     logger.info(f"Starting Quart HTTP server on port {HTTP_PORT}")
     quart_task = asyncio.create_task(serve(app, config))
     logger.info("Quart HTTP server started.")
 
-    # Start ADC and LIN processing task
+    # Стартиране на ADC и LIN обработващата задача
     adc_lin_task = asyncio.create_task(process_adc_and_lin())
     logger.info("ADC and LIN processing task started.")
 
@@ -289,9 +325,9 @@ if __name__ == '__main__':
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Shutting down ADC & LIN Add-on...")
+        logger.info("Shutting down ADC & LIN Advanced Add-on...")
     finally:
         spi.close()
         if lin_master.ser:
             lin_master.ser.close()
-        logger.info("ADC & LIN Add-on has been shut down.")
+        logger.info("ADC & LIN Advanced Add-on has been shut down.")
