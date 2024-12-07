@@ -22,6 +22,8 @@ from quart import Quart, jsonify, send_from_directory, websocket
 import logging
 import serial
 import struct
+import json
+import websockets
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
 
@@ -52,6 +54,15 @@ VOLTAGE_MULTIPLIER = 3.31
 RESISTANCE_REFERENCE = 10000
 MOVING_AVERAGE_WINDOW = 10
 LED_VOLTAGE_THRESHOLD = 3.0
+
+# Supervisor WebSocket Configuration
+SUPERVISOR_WS_URL = os.getenv("SUPERVISOR_WS_URL", "ws://supervisor/core/websocket")
+SUPERVISOR_TOKEN = os.getenv("SUPERVISOR_TOKEN")
+INGRESS_PATH = os.getenv('INGRESS_PATH', '')  # Ingress path configuration
+
+if not SUPERVISOR_TOKEN:
+    logger.error("SUPERVISOR_TOKEN is not set. Exiting.")
+    exit(1)
 
 ############################################
 # Data Storage
@@ -105,14 +116,14 @@ async def index():
         logger.error(f"Error serving index.html: {e}")
         return jsonify({"error": "Index file not found."}), 404
 
-# WebSocket маршрут
+# WebSocket маршрут за Ingress
 @app.websocket('/ws')
-async def ws():
+async def ws_route():
     logger.info("New WebSocket connection established.")
     clients.add(websocket._get_current_object())
     try:
         while True:
-            # Поддържане на връзката
+            # Поддържане на връзката чрез получаване на съобщения
             await websocket.receive()
     except asyncio.CancelledError:
         pass
@@ -258,6 +269,33 @@ def process_adc_data(channel):
         return round(resistance, 2)
 
 ############################################
+# Supervisor WebSocket Client
+############################################
+async def supervisor_ws_client():
+    uri = SUPERVISOR_WS_URL
+    headers = {
+        "Authorization": f"Bearer {SUPERVISOR_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    try:
+        async with websockets.connect(uri, extra_headers=headers) as websocket_conn:
+            logger.info("Connected to Supervisor WebSocket API.")
+            # Пример: Изпращане на команда за получаване на състоянието на Home Assistant
+            subscribe_message = json.dumps({
+                "type": "subscribe_events",
+                "event_type": "state_changed"
+            })
+            await websocket_conn.send(subscribe_message)
+            logger.debug("Subscribed to state_changed events.")
+
+            async for message in websocket_conn:
+                data = json.loads(message)
+                logger.debug(f"Supervisor WebSocket message: {data}")
+                # Можете да обработвате получените съобщения тук
+    except Exception as e:
+        logger.error(f"Supervisor WebSocket connection error: {e}")
+
+############################################
 # Async Tasks
 ############################################
 async def process_adc_and_lin():
@@ -292,7 +330,7 @@ async def process_adc_and_lin():
 
         # Изпращане на актуализираните данни към всички свързани WebSocket клиенти
         if clients:
-            data_to_send = jsonify(latest_data).get_data(as_text=True)
+            data_to_send = json.dumps(latest_data)
             await asyncio.gather(*(client.send(data_to_send) for client in clients))
             logger.debug("Sent updated data to WebSocket clients.")
 
@@ -302,6 +340,9 @@ async def process_adc_and_lin():
 # Main Function
 ############################################
 async def main():
+    # Стартиране на Supervisor WebSocket клиент
+    supervisor_task = asyncio.create_task(supervisor_ws_client())
+
     # Стартиране на Quart app с Hypercorn
     config = Config()
     config.bind = [f"0.0.0.0:{HTTP_PORT}"]
@@ -314,6 +355,7 @@ async def main():
     logger.info("ADC and LIN processing task started.")
 
     await asyncio.gather(
+        supervisor_task,
         quart_task,
         adc_lin_task
     )
