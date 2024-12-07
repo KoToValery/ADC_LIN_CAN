@@ -1,4 +1,4 @@
-name: "ADC & LIN Advanced"
+name: "ADC & LIN_advanced"
 version: "1.0.4.2"
 slug: "adc_lin_advanced"
 description: "Add-on for visualizing ADC and LIN communication with automatic HA discovery"
@@ -9,31 +9,28 @@ arch:
   - amd64
   - i386
 startup: "services"
-boot: "auto"
 ingress: true
 panel_icon: mdi:chip
-panel_title: "Advanced ADC & LIN"
+panel_title: "advanced ADC & LIN"
 ingress_port: 8099
 ports:
-  # Ако имате нужда от допълнителни портове, разкоментирайте и коригирайте следното:
-  # - 8765/tcp:8765  # WebSocket 
+  8765/tcp: 8765  # WebSocket 
 homeassistant_api: true
 host_network: true
 map:
   - spi
   - config
   - dev
+options:
+  mqtt_user: "adc"     
+  mqtt_pass: "adc"       
+schema:
+  mqtt_user: str
+  mqtt_pass: str
+environment:
+  MQTT_USER: "${mqtt_user}"
+  MQTT_PASS: "${mqtt_pass}"
 devices:
   - /dev/spidev1.1:/dev/spidev1.1
   - /dev/spidev1.0:/dev/spidev1.0
   - /dev/ttyAMA2:/dev/ttyAMA2
-environment:
-  # Ако използвате MQTT, разкоментирайте и настройте следното:
-  # MQTT_USER: "${mqtt_user}"
-  # MQTT_PASS: "${mqtt_pass}"
-schema:
-  # Ако използвате MQTT, разкоментирайте и настройте следното:
-  # mqtt_user:
-  #   type: str
-  # mqtt_pass:
-  #   type: str
