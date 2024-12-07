@@ -14,7 +14,8 @@ panel_icon: mdi:chip
 panel_title: "advanced ADC & LIN"
 ingress_port: 8099
 ports:
-  8765/tcp: 8765  # WebSocket 
+ingress_entry: index.html
+ # 8765/tcp: 8765  # WebSocket 
 homeassistant_api: true
 host_network: true
 map:
@@ -22,14 +23,14 @@ map:
   - config
   - dev
 options:
-  mqtt_user: "adc"     
-  mqtt_pass: "adc"       
+  #mqtt_user: "adc"     
+  #mqtt_pass: "adc"       
 schema:
-  mqtt_user: str
-  mqtt_pass: str
+  #mqtt_user: str
+  #mqtt_pass: str
 environment:
-  MQTT_USER: "${mqtt_user}"
-  MQTT_PASS: "${mqtt_pass}"
+ # MQTT_USER: "${mqtt_user}"
+  #MQTT_PASS: "${mqtt_pass}"
 devices:
   - /dev/spidev1.1:/dev/spidev1.1
   - /dev/spidev1.0:/dev/spidev1.0
