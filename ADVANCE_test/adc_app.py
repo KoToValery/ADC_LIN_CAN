@@ -1,14 +1,14 @@
 # adc_app.py
 # AUTH: Kostadin Tosev
 # DATE: 2024
-#
+
 # Target: RPi5
 # Project CIS3
 # Hardware PCB V3.0
 # Tool: Python 3
-#
-# V01.01.09.2024.CIS3 - optimized with MQTT integration
-#
+
+# V01.01.09.2024.CIS3 - optimized with MQTT integration and Quart
+
 # Features:
 # 1. ADC reading (Voltage channels 0-3, Resistance channels 4-5)
 # 2. LIN Communication for LED control & temperature reading
@@ -25,9 +25,10 @@ import spidev
 import websockets
 import paho.mqtt.client as mqtt
 from collections import deque
-from flask import Flask, send_from_directory, jsonify, Response
-from flask_sock import Sock
-from lin_master import LINMaster  # Уверете се, че lin_master.py съдържа LINMaster класа
+from quart import Quart, jsonify
+from datetime import datetime
+from lin_master import LINMaster
+import logging
 
 ############################################
 # Configuration
@@ -77,10 +78,13 @@ latest_data = {
 }
 
 ############################################
-# Flask App and WebSocket
+# Quart App Initialization
 ############################################
-app = Flask(__name__, static_folder='.')
-sock = Sock(app)
+app = Quart(__name__)
+
+# Настройка на Quart логера за да не показва GET заявките
+log = logging.getLogger('quart.app')
+log.setLevel(logging.ERROR)  # Може да бъде DEBUG, INFO, WARNING, ERROR, CRITICAL
 
 ############################################
 # SPI Initialization
@@ -143,32 +147,15 @@ def process_channel(channel):
         return calculate_resistance(filtered_ema)
 
 ############################################
-# Flask Routes
+# Quart Routes
 ############################################
-@app.route(f'{base_path}/')
-def dashboard():
-    return send_from_directory(app.static_folder, 'index.html')
-
-@app.route(f'{base_path}/data')
-def data():
+@app.route('/data')
+async def data():
     return jsonify(latest_data)
 
-@app.route(f'{base_path}/health')
-def health():
-    return Response(status=200)
-
-@sock.route(f'{base_path}/ws')
-def websocket_handler(ws):
-    while True:
-        try:
-            ws.send(json.dumps(latest_data))
-            time.sleep(1)
-        except websockets.exceptions.ConnectionClosed:
-            print(f"[{datetime.now()}] [ADC & LIN] WebSocket connection closed")
-            break
-        except Exception as e:
-            print(f"[{datetime.now()}] [ADC & LIN] WebSocket error: {e}")
-            break
+@app.route('/health')
+async def health():
+    return '', 200
 
 ############################################
 # MQTT Setup for Discovery
@@ -313,44 +300,54 @@ def publish_mqtt_states():
 ############################################
 
 async def process_adc_data():
+    print(f"[{datetime.now()}] [ADC & LIN] Starting process_adc_data task")
     while True:
-        for channel in range(6):
-            value = process_channel(channel)
-            if channel < 4:
-                latest_data["adc_channels"][f"channel_{channel}"]["voltage"] = value
-                print(f"[{datetime.now()}] [ADC & LIN] Channel {channel} Voltage: {value} V")
-            else:
-                latest_data["adc_channels"][f"channel_{channel}"]["resistance"] = value
-                print(f"[{datetime.now()}] [ADC & LIN] Channel {channel} Resistance: {value} Ω")
+        try:
+            for channel in range(6):
+                value = process_channel(channel)
+                if channel < 4:
+                    latest_data["adc_channels"][f"channel_{channel}"]["voltage"] = value
+                    print(f"[{datetime.now()}] [ADC & LIN] Channel {channel} Voltage: {value} V")
+                else:
+                    latest_data["adc_channels"][f"channel_{channel}"]["resistance"] = value
+                    print(f"[{datetime.now()}] [ADC & LIN] Channel {channel} Resistance: {value} Ω")
+        except Exception as e:
+            print(f"[{datetime.now()}] [ADC & LIN] Error in process_adc_data: {e}")
         await asyncio.sleep(0.05)  # Slightly slower to reduce CPU usage
 
 async def process_lin_operations():
+    print(f"[{datetime.now()}] [ADC & LIN] Starting process_lin_operations task")
     while True:
-        # LED control based on channel_0 voltage
-        channel_0_voltage = latest_data["adc_channels"].get("channel_0", {}).get("voltage", 0)
-        state = "ON" if channel_0_voltage > LED_VOLTAGE_THRESHOLD else "OFF"
-        
-        # Check if state has changed to avoid sending redundant commands
-        if latest_data["slave_sensors"]["slave_1"]["led_state"] != state:
-            success = lin_master.control_led(0x01, state)  # Използвайте правилния идентификатор
-            if success:
-                latest_data["slave_sensors"]["slave_1"]["led_state"] = state
-                print(f"[{datetime.now()}] [ADC & LIN] LED turned {state} based on channel 0 voltage: {channel_0_voltage} V")
-            else:
-                print(f"[{datetime.now()}] [ADC & LIN] Failed to send LED {state} command to slave.")
-        
-        # Read temperature
-        temperature = lin_master.read_slave_temperature(0x01)
-        if temperature is not None:
-            latest_data["slave_sensors"]["slave_1"]["value"] = temperature
-            print(f"[{datetime.now()}] [ADC & LIN] Slave 1 Temperature: {temperature} °C")
-        
+        try:
+            # LED control based on channel_0 voltage
+            channel_0_voltage = latest_data["adc_channels"].get("channel_0", {}).get("voltage", 0)
+            state = "ON" if channel_0_voltage > LED_VOLTAGE_THRESHOLD else "OFF"
+            
+            # Check if state has changed to avoid sending redundant commands
+            if latest_data["slave_sensors"]["slave_1"]["led_state"] != state:
+                success = lin_master.control_led(0x01, state)  # Използвайте правилния идентификатор
+                if success:
+                    latest_data["slave_sensors"]["slave_1"]["led_state"] = state
+                    print(f"[{datetime.now()}] [ADC & LIN] LED turned {state} based on channel 0 voltage: {channel_0_voltage} V")
+                else:
+                    print(f"[{datetime.now()}] [ADC & LIN] Failed to send LED {state} command to slave.")
+            
+            # Read temperature
+            temperature = lin_master.read_slave_temperature(0x01)
+            if temperature is not None:
+                latest_data["slave_sensors"]["slave_1"]["value"] = temperature
+                print(f"[{datetime.now()}] [ADC & LIN] Slave 1 Temperature: {temperature} °C")
+        except Exception as e:
+            print(f"[{datetime.now()}] [ADC & LIN] Error in process_lin_operations: {e}")
         await asyncio.sleep(0.5)
 
 async def publish_states_to_mqtt():
-    # Periodically publish sensor states to MQTT
+    print(f"[{datetime.now()}] [ADC & LIN] Starting publish_states_to_mqtt task")
     while True:
-        publish_mqtt_states()
+        try:
+            publish_mqtt_states()
+        except Exception as e:
+            print(f"[{datetime.now()}] [ADC & LIN] Error in publish_mqtt_states: {e}")
         await asyncio.sleep(2)  # Update states every 2 seconds
 
 async def supervisor_websocket():
@@ -371,24 +368,22 @@ async def supervisor_websocket():
 ############################################
 
 async def main():
-    # Start Flask app in a separate thread for Ingress dashboard
-    flask_thread = threading.Thread(target=lambda: app.run(host='0.0.0.0', port=HTTP_PORT), daemon=True)
-    flask_thread.start()
-    print(f"[{datetime.now()}] [ADC & LIN] Flask HTTP server started on port {HTTP_PORT}")
-
     # Initialize LIN Master
     if lin_master.ser:
         print(f"[{datetime.now()}] [ADC & LIN] LINMaster успешно инициализиран.")
     else:
         print(f"[{datetime.now()}] [ADC & LIN] LINMaster не е инициализиран. Проверете UART настройките.")
-
+    
     # Connect to MQTT for discovery and state updates
     mqtt_connect()
+    print(f"[{datetime.now()}] [ADC & LIN] Initiated MQTT connection.")
     
     # Wait until MQTT is connected
     while not mqtt_client.is_connected():
         print(f"[{datetime.now()}] [ADC & LIN] Waiting for MQTT connection...")
         await asyncio.sleep(1)
+    
+    print(f"[{datetime.now()}] [ADC & LIN] MQTT connected. Starting async tasks.")
     
     # Run tasks concurrently
     await asyncio.gather(
@@ -398,8 +393,17 @@ async def main():
         publish_states_to_mqtt()
     )
 
+############################################
+# Run Quart App and Main Function
+############################################
+
 if __name__ == '__main__':
     try:
+        # Стартиране на Quart приложението в отделен thread
+        threading.Thread(target=lambda: app.run(host='0.0.0.0', port=HTTP_PORT), daemon=True).start()
+        print(f"[{datetime.now()}] [ADC & LIN] Quart HTTP server started on port {HTTP_PORT}")
+        
+        # Стартиране на main асинхронната функция
         asyncio.run(main())
     except KeyboardInterrupt:
         print(f"[{datetime.now()}] [ADC & LIN] Shutting down ADC & LIN Add-on...")
