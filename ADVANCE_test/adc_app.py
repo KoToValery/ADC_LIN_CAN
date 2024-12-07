@@ -115,6 +115,10 @@ try:
 except Exception as e:
     logger.error(f"SPI initialization error: {e}")
 
+# Define PIDs
+PID_TEMPERATURE = 0xC1
+PID_LED_CONTROL = 0xC2
+
 class LINMasterProtocol(asyncio.Protocol):
     def __init__(self, master):
         self.master = master
@@ -145,9 +149,13 @@ class LINMasterProtocol(asyncio.Protocol):
         elif self.state == 'WAIT_PID':
             self.current_frame['pid'] = byte
             # Determine expected data length based on PID
-            # For PID 0xC1, expecting 2 data bytes
-            if byte == 0xC1:
+            if byte == PID_TEMPERATURE:
                 self.expected_bytes = 3  # 2 data bytes + 1 checksum
+                self.current_frame['data'] = bytearray()
+                self.state = 'READ_DATA'
+                logger.debug(f"LINMaster: PID {byte:#04x} detected. Expecting {self.expected_bytes} bytes.")
+            elif byte == PID_LED_CONTROL:
+                self.expected_bytes = 3  # 1 data byte + 1 checksum
                 self.current_frame['data'] = bytearray()
                 self.state = 'READ_DATA'
                 logger.debug(f"LINMaster: PID {byte:#04x} detected. Expecting {self.expected_bytes} bytes.")
@@ -156,7 +164,7 @@ class LINMasterProtocol(asyncio.Protocol):
                 self.reset_state()
         elif self.state == 'READ_DATA':
             self.current_frame['data'].append(byte)
-            if len(self.current_frame['data']) == (self.expected_bytes -1):
+            if len(self.current_frame['data']) == (self.expected_bytes - 1):
                 self.state = 'READ_CHECKSUM'
                 logger.debug("LINMaster: Data bytes received. Waiting for checksum.")
         elif self.state == 'READ_CHECKSUM':
@@ -172,11 +180,15 @@ class LINMasterProtocol(asyncio.Protocol):
         # Calculate checksum
         calculated_checksum = self.master.calculate_checksum([pid] + list(data))
         if checksum == calculated_checksum:
-            if pid == 0xC1:
+            if pid == PID_TEMPERATURE:
                 # Interpret data as temperature
                 temperature = struct.unpack('<H', data)[0] / 100.0
-                logger.info(f"LINMaster: Valid response. Temperature: {temperature:.2f} °C")
+                logger.info(f"LINMaster: Valid temperature response. Temperature: {temperature:.2f} °C")
                 self.master.latest_data["slave_sensors"]["slave_1"]["value"] = temperature
+            elif pid == PID_LED_CONTROL:
+                # Interpret data as LED status (if needed)
+                logger.info(f"LINMaster: LED Control Response received.")
+                # Implement any response handling if necessary
         else:
             logger.warning(f"LINMaster: Checksum mismatch! Received: 0x{checksum:02X}, Calculated: 0x{calculated_checksum:02X}")
 
@@ -186,14 +198,16 @@ class LINMasterProtocol(asyncio.Protocol):
         self.expected_bytes = 0
 
 class LINMaster:
-    def __init__(self, uart_port='/dev/ttyAMA2', uart_baudrate=9600, uart_timeout=1):
+    def __init__(self, uart_port='/dev/ttyAMA2', uart_baudrate=9600, uart_timeout=1, latest_data=None):
         self.SYNC_BYTE = 0x55
-        self.PID_BYTE = 0xC1  # Updated to match master's PID
+        self.PID_TEMPERATURE = PID_TEMPERATURE
+        self.PID_LED_CONTROL = PID_LED_CONTROL
         self.BREAK_DURATION = 1.35e-3
         self.RESPONSE_TIMEOUT = 0.1
 
         self.uart_port = uart_port
         self.uart_baudrate = uart_baudrate
+        self.latest_data = latest_data
 
         self.protocol = None
         self.transport = None
@@ -232,8 +246,7 @@ class LINMaster:
         if self.transport:
             try:
                 # Simulate BREAK by setting the line low for BREAK_DURATION
-                # This implementation depends on the hardware and may require specific commands
-                # Here, we send a BREAK signal by using the break_condition property
+                # Note: actual implementation might vary based on hardware
                 self.transport.serial.break_condition = True
                 logger.debug(f"LINMaster: Sending BREAK condition for {self.BREAK_DURATION} seconds.")
                 await asyncio.sleep(self.BREAK_DURATION)
@@ -245,11 +258,10 @@ class LINMaster:
         else:
             logger.error("LINMaster: UART not connected. Cannot send BREAK.")
 
-    async def send_header(self, identifier):
+    async def send_header(self, pid):
         if self.transport:
             try:
                 await self.send_break()
-                pid = self.calculate_pid(identifier)
                 header = bytes([self.SYNC_BYTE, pid])
                 self.transport.write(header)
                 logger.debug(f"LINMaster: Sent SYNC byte: 0x{self.SYNC_BYTE:02X}")
@@ -263,10 +275,9 @@ class LINMaster:
             return None
 
     async def send_request_frame(self, identifier):
+        pid = self.calculate_pid(identifier)
         logger.info(f"LINMaster: Sending temperature request to identifier: 0x{identifier:02X}")
-        pid = await self.send_header(identifier)
-        if pid is None:
-            return None
+        await self.send_header(pid)
         # The response will be handled asynchronously by the protocol
         # Wait for RESPONSE_TIMEOUT to allow response to be received
         await asyncio.sleep(self.RESPONSE_TIMEOUT)
@@ -279,11 +290,9 @@ class LINMaster:
             return None
 
     async def send_data_frame(self, identifier, data_bytes):
-        logger.info(f"LINMaster: Sending data frame to identifier: 0x{identifier:02X} with data: {data_bytes.hex()}")
-        pid = await self.send_header(identifier)
-        if pid is None:
-            return False
-
+        pid = self.calculate_pid(identifier)
+        logger.info(f"LINMaster: Sending LED command to identifier: 0x{identifier:02X} with data: {data_bytes.hex()}")
+        await self.send_header(pid)
         csum = self.calculate_checksum([pid] + list(data_bytes))
         frame = data_bytes + bytes([csum])
         try:
@@ -299,18 +308,17 @@ class LINMaster:
         logger.info(f"LINMaster: Sending LED command: {state}")
         success = await self.send_data_frame(identifier, bytes([command]))
         if success:
-            latest_data["slave_sensors"]["slave_1"]["led_state"] = state
+            self.latest_data["slave_sensors"]["slave_1"]["led_state"] = state
             logger.info(f"LINMaster: LED {state} command successfully sent.")
         else:
             logger.warning(f"LINMaster: Failed to send LED {state} command.")
         return success
 
     async def read_slave_temperature(self, identifier):
-        logger.info(f"LINMaster: Requesting temperature from identifier: 0x{identifier:02X}")
         temperature = await self.send_request_frame(identifier)
         return temperature
 
-lin_master = LINMaster()
+lin_master = LINMaster(latest_data=latest_data)
 
 buffers_ma = {i: deque(maxlen=MOVING_AVERAGE_WINDOW) for i in range(6)}
 
@@ -349,7 +357,7 @@ async def supervisor_ws_client():
         "Content-Type": "application/json"
     }
     try:
-        async with websockets.connect(uri, extra_headers=headers) as websocket_conn:
+        async with websockets.connect(uri, headers=headers) as websocket_conn:
             logger.info("Connected to Supervisor WebSocket API.")
             subscribe_message = json.dumps({
                 "type": "subscribe_events",
