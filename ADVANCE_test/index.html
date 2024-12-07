@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sensor Dashboard</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #0f0f1f;
+            color: #fff;
+            margin: 0;
+            padding: 20px;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            overflow-x: hidden;
+        }
+        .dashboard {
+            max-width: 1200px;
+            width: 100%;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 40px;
+            padding: 20px;
+            position: relative;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 3em;
+            color: #00e6e6;
+            text-shadow: 0 0 10px #00e6e6, 0 0 20px #0ff;
+        }
+
+        .section {
+            margin-bottom: 40px;
+        }
+
+        .section h2 {
+            font-size: 1.8em;
+            margin-bottom: 20px;
+            text-shadow: 0 0 5px #00e6e6;
+        }
+
+        .channels-grid, .slaves-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+        }
+
+        .card {
+            background: rgba(255,255,255,0.05);
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 0 15px rgba(0, 230, 230, 0.2), inset 0 0 10px rgba(0,0,0,0.5);
+            position: relative;
+            overflow: hidden;
+            backdrop-filter: blur(10px);
+        }
+        .card h3 {
+            margin: 0 0 10px;
+            font-weight: 400;
+        }
+        .value-display {
+            font-size: 2em;
+            font-weight: bold;
+            color: #4fd1c5;
+            margin: 10px 0;
+            text-shadow: 0 0 5px #0ff;
+        }
+        .value-bar {
+            height: 10px;
+            background: #2d3748;
+            border-radius: 5px;
+            margin-top: 10px;
+            overflow: hidden;
+        }
+        .value-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #4fd1c5 0%, #63b3ed 100%);
+            transition: width 0.3s ease;
+        }
+        .led-indicator {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background: #2d3748;
+            position: relative;
+            margin: 20px auto;
+            box-shadow: 0 0 10px #111 inset;
+        }
+        .led-on {
+            background: #48bb78;
+            box-shadow: 0 0 20px #48bb78, 0 0 40px #48bb78;
+        }
+
+        /* Neon Animations */
+        .header::before,
+        .header::after {
+            content: '';
+            position: absolute;
+            width: 200px;
+            height: 200px;
+            border: 2px solid #0ff;
+            border-radius: 50%;
+            opacity: 0.6;
+            animation: pulse 4s infinite alternate;
+        }
+        .header::before {
+            top: -50px;
+            left: calc(50% - 100px);
+        }
+        .header::after {
+            bottom: -50px;
+            right: calc(50% - 100px);
+        }
+        @keyframes pulse {
+            0% {transform: scale(1); opacity: 0.6;}
+            100% {transform: scale(1.3); opacity: 0.1;}
+        }
+    </style>
+</head>
+<body>
+    <div class="dashboard">
+        <div class="header">
+            <h1>Sensor Dashboard</h1>
+        </div>
+
+        <div class="section">
+            <h2>Voltage Channels (ADC 0-3)</h2>
+            <div class="channels-grid">
+                <div class="card">
+                    <h3>Channel 0</h3>
+                    <div class="value-display" id="channel_0_value">0.0V</div>
+                    <div class="value-bar">
+                        <div class="value-fill" id="channel_0_bar" style="width: 0%;"></div>
+                    </div>
+                </div>
+                <div class="card">
+                    <h3>Channel 1</h3>
+                    <div class="value-display" id="channel_1_value">0.0V</div>
+                    <div class="value-bar">
+                        <div class="value-fill" id="channel_1_bar" style="width: 0%;"></div>
+                    </div>
+                </div>
+                <div class="card">
+                    <h3>Channel 2</h3>
+                    <div class="value-display" id="channel_2_value">0.0V</div>
+                    <div class="value-bar">
+                        <div class="value-fill" id="channel_2_bar" style="width: 0%;"></div>
+                    </div>
+                </div>
+                <div class="card">
+                    <h3>Channel 3</h3>
+                    <div class="value-display" id="channel_3_value">0.0V</div>
+                    <div class="value-bar">
+                        <div class="value-fill" id="channel_3_bar" style="width: 0%;"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Resistance Channels (ADC 4-5)</h2>
+            <div class="channels-grid">
+                <div class="card">
+                    <h3>Channel 4</h3>
+                    <div class="value-display" id="channel_4_value">0.0Ω</div>
+                    <div class="value-bar">
+                        <div class="value-fill" id="channel_4_bar" style="width: 0%;"></div>
+                    </div>
+                </div>
+                <div class="card">
+                    <h3>Channel 5</h3>
+                    <div class="value-display" id="channel_5_value">0.0Ω</div>
+                    <div class="value-bar">
+                        <div class="value-fill" id="channel_5_bar" style="width: 0%;"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Slave Devices</h2>
+            <div class="slaves-grid">
+                <div class="card">
+                    <h3>Temperature Sensor</h3>
+                    <div class="value-display" id="temperature_value">0.0°C</div>
+                    <div class="led-indicator" id="led_indicator"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const baseUrl = window.location.pathname.replace(/\/$/, '');
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const socket = new WebSocket(`${protocol}//${window.location.host}${baseUrl}/ws`);
+        
+            socket.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                
+                // Update voltage channels
+                for (let i = 0; i < 4; i++) {
+                    const channelValue = document.getElementById(`channel_${i}_value`);
+                    const channelBar = document.getElementById(`channel_${i}_bar`);
+                    
+                    const voltage = data.adc_channels[`channel_${i}`].voltage;
+                    channelValue.textContent = `${voltage}V`;
+                    const pct = Math.min((voltage / 3.3) * 100, 100);
+                    channelBar.style.width = `${pct}%`;
+                }
+        
+                // Update resistance channels
+                for (let i = 4; i < 6; i++) {
+                    const channelValue = document.getElementById(`channel_${i}_value`);
+                    const channelBar = document.getElementById(`channel_${i}_bar`);
+                    
+                    const resistance = data.adc_channels[`channel_${i}`].resistance;
+                    channelValue.textContent = `${resistance}Ω`;
+                    const pct = Math.min((resistance / 10000) * 100, 100);
+                    channelBar.style.width = `${pct}%`;
+                }
+        
+                // Update temperature
+                const temperatureValue = document.getElementById('temperature_value');
+                temperatureValue.textContent = `${data.slave_sensors.slave_1.value}°C`;
+        
+                // Update LED indicator
+                const ledIndicator = document.getElementById('led_indicator');
+                const ledState = data.slave_sensors.slave_1.led_state;
+                if (ledState === "ON") {
+                    ledIndicator.classList.add('led-on');
+                } else {
+                    ledIndicator.classList.remove('led-on');
+                }
+                ledIndicator.textContent = ledState;
+            };
+        });
+    </script>
+</body>
+</html>
