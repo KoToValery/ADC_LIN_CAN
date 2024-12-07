@@ -2,17 +2,6 @@
 # AUTH: Kostadin Tosev
 # DATE: 2024
 
-# Target: RPi5
-# Project CIS3
-# Hardware PCB V3.0
-# Python 3
-
-# Features:
-# 1. ADC reading (Voltage channels 0-3, Resistance channels 4-5) - async tasks
-# 2. LIN Communication for LED control & temperature reading (LINMaster class integrated)
-# 3. Quart async web server with WebSocket for data retrieval /health and /data
-# 4. Logging with Python logging module
-
 import os
 import time
 import asyncio
@@ -26,12 +15,10 @@ import json
 import websockets
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
+from datetime import datetime
 
-############################################
-# Logging Setup
-############################################
 logging.basicConfig(
-    level=logging.DEBUG,  # Можете да промените нивото на логване тук (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+    level=logging.DEBUG,
     format='[%(asctime)s] [%(name)s] %(levelname)s: %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
@@ -39,9 +26,6 @@ logger = logging.getLogger('ADC & LIN')
 
 logger.info("ADC & LIN Advanced Add-on started.")
 
-############################################
-# Configuration
-############################################
 HTTP_PORT = 8099
 SPI_BUS = 1
 SPI_DEVICE = 1
@@ -55,18 +39,14 @@ RESISTANCE_REFERENCE = 10000
 MOVING_AVERAGE_WINDOW = 10
 LED_VOLTAGE_THRESHOLD = 3.0
 
-# Supervisor WebSocket Configuration
 SUPERVISOR_WS_URL = os.getenv("SUPERVISOR_WS_URL", "ws://supervisor/core/websocket")
 SUPERVISOR_TOKEN = os.getenv("SUPERVISOR_TOKEN")
-INGRESS_PATH = os.getenv('INGRESS_PATH', '')  # Ingress path configuration
+INGRESS_PATH = os.getenv('INGRESS_PATH', '')
 
 if not SUPERVISOR_TOKEN:
     logger.error("SUPERVISOR_TOKEN is not set. Exiting.")
     exit(1)
 
-############################################
-# Data Storage
-############################################
 latest_data = {
     "adc_channels": {
         "channel_0": {"voltage": 0.0, "unit": "V"},
@@ -84,19 +64,13 @@ latest_data = {
     }
 }
 
-############################################
-# Quart App Initialization
-############################################
 app = Quart(__name__)
 
-# Намаляване на нивото на логване на Quart, за да не показва GET /data заявки
 quart_log = logging.getLogger('quart.app')
 quart_log.setLevel(logging.ERROR)
 
-# Получаване на абсолютния път до директорията на скрипта
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Списък с активни WebSocket клиенти
 clients = set()
 
 @app.route('/data')
@@ -107,7 +81,6 @@ async def data():
 async def health():
     return '', 200
 
-# Маршрут за основната страница
 @app.route('/')
 async def index():
     try:
@@ -116,14 +89,12 @@ async def index():
         logger.error(f"Error serving index.html: {e}")
         return jsonify({"error": "Index file not found."}), 404
 
-# WebSocket маршрут за Ingress
 @app.websocket('/ws')
 async def ws_route():
     logger.info("New WebSocket connection established.")
     clients.add(websocket._get_current_object())
     try:
         while True:
-            # Поддържане на връзката чрез получаване на съобщения
             await websocket.receive()
     except asyncio.CancelledError:
         pass
@@ -133,9 +104,6 @@ async def ws_route():
         clients.remove(websocket._get_current_object())
         logger.info("WebSocket connection closed.")
 
-############################################
-# SPI Initialization
-############################################
 spi = spidev.SpiDev()
 try:
     spi.open(SPI_BUS, SPI_DEVICE)
@@ -145,12 +113,9 @@ try:
 except Exception as e:
     logger.error(f"SPI initialization error: {e}")
 
-############################################
-# LINMaster Class
-############################################
 class LINMaster:
     def __init__(self, uart_port='/dev/ttyAMA2', uart_baudrate=9600, uart_timeout=1):
-        self.LIN_SYNC_BYTE = 0x55
+        self.SYNC_BYTE = 0x55
         self.LED_ON_COMMAND = 0x01
         self.LED_OFF_COMMAND = 0x00
         self.BREAK_DURATION = 1.35e-3
@@ -170,74 +135,143 @@ class LINMaster:
             logger.error(f"UART initialization error: {e}")
             self.ser = None
 
-    def send_header(self, identifier):
+    def calculate_pid(self, identifier):
+        id_bits = identifier & 0x3F
+        p0 = ((id_bits >> 0) & 1) ^ ((id_bits >> 1) & 1) ^ ((id_bits >> 2) & 1) ^ ((id_bits >> 4) & 1)
+        p1 = (~(((id_bits >> 1) & 1) ^ ((id_bits >> 3) & 1) ^ ((id_bits >> 4) & 1) ^ ((id_bits >> 5) & 1))) & 1
+        pid = id_bits | (p0 << 6) | (p1 << 7)
+        logger.debug(f"Calculated PID: 0x{pid:02X} for identifier: 0x{identifier:02X}")
+        return pid
+
+    def calculate_checksum(self, data):
+        checksum = sum(data) & 0xFF
+        checksum = (~checksum) & 0xFF
+        logger.debug(f"Calculated Checksum: 0x{checksum:02X} for data: {data}")
+        return checksum
+
+    def send_break(self):
         if self.ser:
             try:
                 self.ser.break_condition = True
-                logger.debug(f"LINMaster: Sending BREAK condition for {self.BREAK_DURATION} seconds.")
+                logger.debug(f"Sending BREAK condition for {self.BREAK_DURATION} seconds.")
                 time.sleep(self.BREAK_DURATION)
                 self.ser.break_condition = False
                 time.sleep(0.0001)
-                self.ser.write(bytes([self.LIN_SYNC_BYTE]))
-                pid = identifier & 0x3F
+                logger.debug("BREAK condition sent.")
+            except Exception as e:
+                logger.error(f"Error sending BREAK: {e}")
+        else:
+            logger.error("UART not initialized. Cannot send BREAK.")
+
+    def send_header(self, identifier):
+        if self.ser:
+            try:
+                self.send_break()
+                pid = self.calculate_pid(identifier)
+                self.ser.write(bytes([self.SYNC_BYTE]))
+                logger.debug(f"Sent SYNC byte: 0x{self.SYNC_BYTE:02X}")
                 self.ser.write(bytes([pid]))
-                logger.debug(f"LINMaster: Sent header with PID: 0x{pid:02X}")
+                logger.debug(f"Sent PID byte: 0x{pid:02X}")
                 return pid
             except Exception as e:
-                logger.error(f"LINMaster: Error sending header: {e}")
+                logger.error(f"Error sending header: {e}")
                 return None
         else:
-            logger.error("LINMaster: UART not initialized, cannot send header.")
+            logger.error("UART not initialized. Cannot send header.")
             return None
 
-    def control_led(self, identifier, state):
-        command = self.LED_ON_COMMAND if state == "ON" else self.LED_OFF_COMMAND
-        logger.info(f"LINMaster: Sending LED command: {state}")
-        try:
-            pid = self.send_header(identifier)
-            if pid is not None:
-                frame = bytes([command])
-                self.ser.write(frame)
-                logger.debug(f"LINMaster: Sent data frame for LED: {frame.hex()}")
-                return True
-            else:
-                logger.error("LINMaster: PID not received, LED command not sent.")
-        except Exception as e:
-            logger.error(f"LINMaster: Error sending LED command: {e}")
-        return False
-
-    def read_temperature(self, identifier):
-        try:
-            pid = self.send_header(identifier)
-            if pid is not None:
+    def read_response(self, expected_length):
+        if self.ser:
+            try:
                 start_time = time.time()
                 response = bytearray()
-                logger.debug(f"LINMaster: Waiting for temperature response with timeout {self.RESPONSE_TIMEOUT} seconds.")
+
                 while (time.time() - start_time) < self.RESPONSE_TIMEOUT:
                     if self.ser.in_waiting:
                         byte = self.ser.read(1)
                         response.extend(byte)
-                        logger.debug(f"LINMaster: Received byte: {byte.hex()}")
-                        if len(response) >= 2:
+                        if len(response) >= expected_length:
                             break
-                if len(response) == 2:
-                    temperature = int.from_bytes(response, byteorder='little') / 100.0
-                    logger.debug(f"LINMaster: Read temperature: {temperature:.2f} °C")
-                    return temperature
-                else:
-                    logger.warning("LINMaster: Incomplete temperature response received.")
-        except Exception as e:
-            logger.error(f"LINMaster: Error reading temperature: {e}")
-        return None
 
-############################################
-# Create LIN Master Instance
-############################################
+                filtered_response = bytearray(b for b in response if b != 0)
+                logger.debug(f"Received response (hex): {filtered_response.hex()}")
+
+                if len(filtered_response) == expected_length:
+                    return filtered_response
+                else:
+                    logger.warning(f"Incomplete or invalid response. Expected: {expected_length} bytes, Received: {len(filtered_response)} bytes.")
+                    return None
+            except Exception as e:
+                logger.error(f"Error reading response: {e}")
+                return None
+        else:
+            logger.error("UART not initialized. Cannot read response.")
+            return None
+
+    def send_request_frame(self, identifier):
+        logger.info(f"Sending temperature request to identifier: 0x{identifier:02X}")
+        pid = self.send_header(identifier)
+        if pid is None:
+            return None
+
+        expected_length = 3
+        response = self.read_response(expected_length)
+
+        if response:
+            data = response[:2]
+            received_checksum = response[2]
+            calculated_checksum = self.calculate_checksum([pid] + list(data))
+
+            logger.debug(f"Received data (hex): {data.hex()}, Received Checksum: 0x{received_checksum:02X}, Calculated Checksum: 0x{calculated_checksum:02X}")
+
+            if received_checksum == calculated_checksum:
+                temperature = struct.unpack('<H', data)[0] / 100.0
+                logger.info(f"Valid response. Temperature: {temperature:.2f} °C")
+                return temperature
+            else:
+                logger.warning("Checksum mismatch!")
+                return None
+        else:
+            logger.warning("No valid response from slave.")
+            return None
+
+    def send_data_frame(self, identifier, data_bytes):
+        logger.info(f"Sending data frame to identifier: 0x{identifier:02X} with data: {data_bytes.hex()}")
+        pid = self.send_header(identifier)
+        if pid is None:
+            return False
+
+        csum = self.calculate_checksum([pid] + list(data_bytes))
+        frame = data_bytes + bytes([csum])
+        try:
+            self.ser.write(frame)
+            logger.debug(f"Sent Data Frame (hex): {frame.hex()}")
+            return True
+        except Exception as e:
+            logger.error(f"Error sending Data Frame: {e}")
+            return False
+
+    def control_led(self, identifier, state):
+        command = 0x01 if state == "ON" else 0x00
+        logger.info(f"Sending LED command: {state}")
+        success = self.send_data_frame(identifier, bytes([command]))
+        if success:
+            logger.info(f"LED {state} command successfully sent.")
+        else:
+            logger.warning(f"Failed to send LED {state} command.")
+        return success
+
+    def read_slave_temperature(self, identifier):
+        logger.info(f"Requesting temperature from identifier: 0x{identifier:02X}")
+        temperature = self.send_request_frame(identifier)
+        if temperature is not None:
+            logger.info(f"Read temperature: {temperature:.2f} °C")
+        else:
+            logger.warning("Failed to read temperature.")
+        return temperature
+
 lin_master = LINMaster()
 
-############################################
-# ADC Filtering
-############################################
 buffers_ma = {i: deque(maxlen=MOVING_AVERAGE_WINDOW) for i in range(6)}
 
 def read_adc(channel):
@@ -268,9 +302,6 @@ def process_adc_data(channel):
         resistance = ((RESISTANCE_REFERENCE * (ADC_RESOLUTION - average)) / average) / 10
         return round(resistance, 2)
 
-############################################
-# Supervisor WebSocket Client
-############################################
 async def supervisor_ws_client():
     uri = SUPERVISOR_WS_URL
     headers = {
@@ -280,7 +311,6 @@ async def supervisor_ws_client():
     try:
         async with websockets.connect(uri, extra_headers=headers) as websocket_conn:
             logger.info("Connected to Supervisor WebSocket API.")
-            # Пример: Изпращане на команда за получаване на състоянието на Home Assistant
             subscribe_message = json.dumps({
                 "type": "subscribe_events",
                 "event_type": "state_changed"
@@ -291,13 +321,9 @@ async def supervisor_ws_client():
             async for message in websocket_conn:
                 data = json.loads(message)
                 logger.debug(f"Supervisor WebSocket message: {data}")
-                # Можете да обработвате получените съобщения тук
     except Exception as e:
         logger.error(f"Supervisor WebSocket connection error: {e}")
 
-############################################
-# Async Tasks
-############################################
 async def process_adc_and_lin():
     while True:
         for i in range(6):
@@ -310,7 +336,6 @@ async def process_adc_and_lin():
                 latest_data["adc_channels"][f"channel_{i}"]["resistance"] = resistance
                 logger.debug(f"ADC Channel {i} Resistance: {resistance} Ω")
 
-        # Контролиране на LED въз основа на напрежението на канал 0
         channel_0_voltage = latest_data["adc_channels"]["channel_0"]["voltage"]
         led_state = "ON" if channel_0_voltage > LED_VOLTAGE_THRESHOLD else "OFF"
         success = lin_master.control_led(0x01, led_state)
@@ -320,15 +345,13 @@ async def process_adc_and_lin():
         else:
             logger.warning(f"Failed to send LED {led_state} command.")
 
-        # Четене на температура от слейва
-        temperature = lin_master.read_temperature(0x01)
+        temperature = lin_master.read_slave_temperature(0x01)
         if temperature is not None:
             latest_data["slave_sensors"]["slave_1"]["value"] = temperature
             logger.debug(f"Slave 1 Temperature: {temperature:.2f} °C")
         else:
             logger.warning("Failed to read temperature from slave.")
 
-        # Изпращане на актуализираните данни към всички свързани WebSocket клиенти
         if clients:
             data_to_send = json.dumps(latest_data)
             await asyncio.gather(*(client.send(data_to_send) for client in clients))
@@ -336,33 +359,21 @@ async def process_adc_and_lin():
 
         await asyncio.sleep(1)
 
-############################################
-# Main Function
-############################################
 async def main():
-    # Стартиране на Supervisor WebSocket клиент
     supervisor_task = asyncio.create_task(supervisor_ws_client())
-
-    # Стартиране на Quart app с Hypercorn
     config = Config()
     config.bind = [f"0.0.0.0:{HTTP_PORT}"]
     logger.info(f"Starting Quart HTTP server on port {HTTP_PORT}")
     quart_task = asyncio.create_task(serve(app, config))
     logger.info("Quart HTTP server started.")
-
-    # Стартиране на ADC и LIN обработващата задача
     adc_lin_task = asyncio.create_task(process_adc_and_lin())
     logger.info("ADC and LIN processing task started.")
-
     await asyncio.gather(
         supervisor_task,
         quart_task,
         adc_lin_task
     )
 
-############################################
-# Run Quart App and Main
-############################################
 if __name__ == '__main__':
     try:
         asyncio.run(main())
