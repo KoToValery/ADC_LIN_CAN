@@ -14,7 +14,6 @@ ingress: true
 panel_icon: mdi:chip
 panel_title: "Advanced ADC & LIN"
 ingress_port: 8099
-ingress_entry: /index.html
 ports:
   # Ако имате нужда от допълнителни портове, разкоментирайте и коригирайте следното:
   # - 8765/tcp:8765  # WebSocket 
