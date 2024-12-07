@@ -51,8 +51,8 @@ SUPERVISOR_TOKEN = os.getenv("SUPERVISOR_TOKEN")
 # MQTT Configuration
 MQTT_BROKER = os.getenv("MQTT_BROKER", "core-mosquitto")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
-MQTT_USER = os.getenv("MQTT_USER", "")
-MQTT_PASS = os.getenv("MQTT_PASS", "")
+MQTT_USER = os.getenv("MQTT_USER", "adc")
+MQTT_PASS = os.getenv("MQTT_PASS", "adc")
 
 base_path = os.getenv('INGRESS_PATH', '')  # Ingress path configuration
 
