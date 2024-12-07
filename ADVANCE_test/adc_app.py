@@ -1,4 +1,3 @@
-# Copyright 2004 - 2024  biCOMM Design Ltd
 # adc_app.py
 # AUTH: Kostadin Tosev
 # DATE: 2024
@@ -8,14 +7,14 @@
 # Hardware PCB V3.0
 # Tool: Python 3
 #
-# V01.01.09.2024.CIS3 - improved version
+# V01.01.09.2024.CIS3 - optimized with MQTT integration
 #
 # Features:
 # 1. ADC reading (Voltage channels 0-3, Resistance channels 4-5)
 # 2. LIN Communication for LED control & temperature reading
-# 3. Real-time dashboard via WebSocket
+# 3. Real-time dashboard via WebSocket and Ingress
 # 4. MQTT Discovery for Home Assistant Sensors
-# 5. Improved code structure & "wow" UI
+# 5. Improved code structure & error handling
 
 import os
 import time
@@ -49,11 +48,11 @@ LED_VOLTAGE_THRESHOLD = 3.0
 SUPERVISOR_WS_URL = "ws://supervisor/core/websocket"
 SUPERVISOR_TOKEN = os.getenv("SUPERVISOR_TOKEN")
 
-# Configuration
-MQTT_BROKER = "core-mosquitto"
-MQTT_PORT = 1883
-MQTT_USER = os.getenv("MQTT_USER", "adc")
-MQTT_PASS = os.getenv("MQTT_PASS", "adc")
+# MQTT Configuration
+MQTT_BROKER = os.getenv("MQTT_BROKER", "core-mosquitto")
+MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
+MQTT_USER = os.getenv("MQTT_USER", "")
+MQTT_PASS = os.getenv("MQTT_PASS", "")
 
 base_path = os.getenv('INGRESS_PATH', '')  # Ingress path configuration
 
@@ -161,26 +160,43 @@ def health():
 @sock.route(f'{base_path}/ws')
 def websocket_handler(ws):
     while True:
-        ws.send(json.dumps(latest_data))
-        time.sleep(1)
+        try:
+            ws.send(json.dumps(latest_data))
+            time.sleep(1)
+        except websockets.exceptions.ConnectionClosed:
+            print("WebSocket connection closed")
+            break
+        except Exception as e:
+            print(f"WebSocket error: {e}")
+            break
 
 ############################################
 # MQTT Setup for Discovery
 ############################################
 
-mqtt_client = mqtt.Client()
+mqtt_client = mqtt.Client(protocol=mqtt.MQTTv5)
 if MQTT_USER and MQTT_PASS:
     mqtt_client.username_pw_set(MQTT_USER, MQTT_PASS)
 
-def on_mqtt_connect(client, userdata, flags, rc):
-    print("Connected to MQTT with result code", rc)
-    # Publish discovery topics for each sensor
-    publish_mqtt_discovery_topics()
+def on_mqtt_connect(client, userdata, flags, reasonCode, properties=None):
+    if reasonCode == 0:
+        print("Connected to MQTT Broker!")
+        publish_mqtt_discovery_topics()
+    else:
+        print(f"Failed to connect to MQTT Broker, return code {reasonCode}")
+
+def on_mqtt_disconnect(client, userdata, reasonCode, properties=None):
+    print(f"Disconnected from MQTT Broker with reason code {reasonCode}")
+
+mqtt_client.on_connect = on_mqtt_connect
+mqtt_client.on_disconnect = on_mqtt_disconnect
 
 def mqtt_connect():
-    mqtt_client.on_connect = on_mqtt_connect
-    mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
-    mqtt_client.loop_start()
+    try:
+        mqtt_client.connect(MQTT_BROKER, MQTT_PORT, keepalive=60)
+        mqtt_client.loop_start()
+    except Exception as e:
+        print(f"MQTT connection error: {e}")
 
 def publish_mqtt_discovery_topics():
     # Voltage sensors: channel_0 to channel_3
@@ -193,10 +209,15 @@ def publish_mqtt_discovery_topics():
             "state_topic": state_topic,
             "unit_of_measurement": "V",
             "unique_id": sensor_id,
-            "device": {"identifiers": ["adc_lin_addon"], "name": "ADC & LIN Addon"}
+            "device": {
+                "identifiers": ["adc_lin_addon"],
+                "name": "ADC & LIN Addon",
+                "model": "CIS3",
+                "manufacturer": "biCOMM Design Ltd"
+            }
         }
         mqtt_client.publish(config_topic, json.dumps(payload), retain=True)
-
+    
     # Resistance sensors: channel_4, channel_5
     for i in range(4, 6):
         sensor_id = f"adc_lin_channel_{i}_resistance"
@@ -207,10 +228,15 @@ def publish_mqtt_discovery_topics():
             "state_topic": state_topic,
             "unit_of_measurement": "Ω",
             "unique_id": sensor_id,
-            "device": {"identifiers": ["adc_lin_addon"], "name": "ADC & LIN Addon"}
+            "device": {
+                "identifiers": ["adc_lin_addon"],
+                "name": "ADC & LIN Addon",
+                "model": "CIS3",
+                "manufacturer": "biCOMM Design Ltd"
+            }
         }
         mqtt_client.publish(config_topic, json.dumps(payload), retain=True)
-
+    
     # Temperature sensor from slave
     sensor_id = "adc_lin_slave_1_temperature"
     config_topic = f"homeassistant/sensor/adc_lin/{sensor_id}/config"
@@ -220,10 +246,15 @@ def publish_mqtt_discovery_topics():
         "state_topic": state_topic,
         "unit_of_measurement": "°C",
         "unique_id": sensor_id,
-        "device": {"identifiers": ["adc_lin_addon"], "name": "ADC & LIN Addon"}
+        "device": {
+            "identifiers": ["adc_lin_addon"],
+            "name": "ADC & LIN Addon",
+            "model": "CIS3",
+            "manufacturer": "biCOMM Design Ltd"
+        }
     }
     mqtt_client.publish(config_topic, json.dumps(payload), retain=True)
-
+    
     # LED state as a binary sensor
     sensor_id = "adc_lin_slave_1_led"
     config_topic = f"homeassistant/binary_sensor/adc_lin/{sensor_id}/config"
@@ -235,10 +266,14 @@ def publish_mqtt_discovery_topics():
         "device_class": "light",
         "payload_on": "ON",
         "payload_off": "OFF",
-        "device": {"identifiers": ["adc_lin_addon"], "name": "ADC & LIN Addon"}
+        "device": {
+            "identifiers": ["adc_lin_addon"],
+            "name": "ADC & LIN Addon",
+            "model": "CIS3",
+            "manufacturer": "biCOMM Design Ltd"
+        }
     }
     mqtt_client.publish(config_topic, json.dumps(payload), retain=True)
-
 
 def publish_mqtt_states():
     # Publish states for each sensor
@@ -247,23 +282,22 @@ def publish_mqtt_states():
         val = latest_data["adc_channels"][f"channel_{i}"]["voltage"]
         state_topic = f"homeassistant/sensor/adc_lin/adc_lin_channel_{i}_voltage/state"
         mqtt_client.publish(state_topic, str(val), retain=False)
-
+    
     # Resistance channels
     for i in range(4, 6):
         val = latest_data["adc_channels"][f"channel_{i}"]["resistance"]
         state_topic = f"homeassistant/sensor/adc_lin/adc_lin_channel_{i}_resistance/state"
         mqtt_client.publish(state_topic, str(val), retain=False)
-
+    
     # Temperature
     temp_val = latest_data["slave_sensors"]["slave_1"]["value"]
     state_topic = "homeassistant/sensor/adc_lin/adc_lin_slave_1_temperature/state"
     mqtt_client.publish(state_topic, str(temp_val), retain=False)
-
+    
     # LED State
     led_state = latest_data["slave_sensors"]["slave_1"]["led_state"]
     led_topic = "homeassistant/binary_sensor/adc_lin/adc_lin_slave_1_led/state"
     mqtt_client.publish(led_topic, led_state, retain=False)
-
 
 ############################################
 # Async Tasks
@@ -274,9 +308,9 @@ async def process_adc_data():
         for channel in range(6):
             value = process_channel(channel)
             if channel < 4:
-                latest_data["adc_channels"][f"channel_{channel}"] = {"voltage": value, "unit": "V"}
+                latest_data["adc_channels"][f"channel_{channel}"]["voltage"] = value
             else:
-                latest_data["adc_channels"][f"channel_{channel}"] = {"resistance": value, "unit": "Ω"}
+                latest_data["adc_channels"][f"channel_{channel}"]["resistance"] = value
         await asyncio.sleep(0.05)  # Slightly slower to reduce CPU usage
 
 async def process_lin_operations():
@@ -295,7 +329,7 @@ async def process_lin_operations():
         await asyncio.sleep(0.5)
 
 async def supervisor_websocket():
-    # We subscribe to state_changed but we might not need to do anything special here.
+    # Subscribe to state_changed but no special handling required for now
     try:
         async with websockets.connect(
             SUPERVISOR_WS_URL, 
@@ -303,7 +337,7 @@ async def supervisor_websocket():
         ) as ws:
             await ws.send(json.dumps({"type": "subscribe_events", "event_type": "state_changed"}))
             async for message in ws:
-                pass  # Just read events; no special handling right now
+                pass  # Just read events; no special handling
     except Exception as e:
         print(f"Supervisor WebSocket error: {e}")
 
@@ -319,11 +353,17 @@ async def publish_states_to_mqtt():
 
 async def main():
     # Start Flask app in a separate thread for Ingress dashboard
-    threading.Thread(target=lambda: app.run(host='0.0.0.0', port=HTTP_PORT), daemon=True).start()
-
+    flask_thread = threading.Thread(target=lambda: app.run(host='0.0.0.0', port=HTTP_PORT), daemon=True)
+    flask_thread.start()
+    
     # Connect to MQTT for discovery and state updates
     mqtt_connect()
-
+    
+    # Wait until MQTT is connected
+    while not mqtt_client.is_connected():
+        print("Waiting for MQTT connection...")
+        await asyncio.sleep(1)
+    
     # Run tasks concurrently
     await asyncio.gather(
         process_adc_data(),
@@ -333,4 +373,12 @@ async def main():
     )
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Shutting down ADC & LIN Add-on...")
+    finally:
+        mqtt_client.loop_stop()
+        if mqtt_client.is_connected():
+            mqtt_client.disconnect()
+        spi.close()
