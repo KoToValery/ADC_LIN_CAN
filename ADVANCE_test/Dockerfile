@@ -15,6 +15,7 @@ RUN pip3 install --no-cache-dir \
     websocket-client \
     spidev \
     pyserial \
+    pyserial-asyncio \
     hypercorn 
 
 # Копиране на приложните файлове в контейнера
