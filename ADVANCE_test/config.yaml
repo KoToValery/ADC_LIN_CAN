@@ -14,7 +14,6 @@ panel_icon: mdi:chip
 panel_title: "advanced ADC & LIN"
 ingress_port: 8099
 ports:
-ingress_entry: index.html
  # 8765/tcp: 8765  # WebSocket 
 homeassistant_api: true
 host_network: true
