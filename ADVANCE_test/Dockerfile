@@ -19,7 +19,6 @@ RUN pip3 install --no-cache-dir \
 
 COPY adc_app.py /
 COPY lin_master.py /
-COPY lin_slave.py /
 COPY index.html /
 
 CMD ["python3", "/adc_app.py"]
