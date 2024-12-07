@@ -318,14 +318,21 @@ async def process_lin_operations():
         # LED control based on channel_0 voltage
         channel_0_voltage = latest_data["adc_channels"].get("channel_0", {}).get("voltage", 0)
         state = "ON" if channel_0_voltage > LED_VOLTAGE_THRESHOLD else "OFF"
-        lin_master.control_led(0x01, state)
-        latest_data["slave_sensors"]["slave_1"]["led_state"] = state
-
+        
+        # Check if state has changed to avoid sending redundant commands
+        if latest_data["slave_sensors"]["slave_1"]["led_state"] != state:
+            success = lin_master.control_led(0x01, state)
+            if success:
+                latest_data["slave_sensors"]["slave_1"]["led_state"] = state
+                print(f"LED turned {state} based on channel 0 voltage: {channel_0_voltage}V")
+            else:
+                print(f"Failed to send LED {state} command to slave.")
+        
         # Read temperature
         temperature = lin_master.read_slave_temperature(0x01)
         if temperature is not None:
             latest_data["slave_sensors"]["slave_1"]["value"] = temperature
-
+        
         await asyncio.sleep(0.5)
 
 async def supervisor_websocket():
