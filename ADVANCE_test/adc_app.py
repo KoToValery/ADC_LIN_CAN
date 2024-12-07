@@ -18,7 +18,7 @@ import time
 import asyncio
 import spidev
 from collections import deque
-from quart import Quart, jsonify
+from quart import Quart, jsonify, send_from_directory
 import logging
 import serial
 import struct
@@ -83,6 +83,9 @@ app = Quart(__name__)
 quart_log = logging.getLogger('quart.app')
 quart_log.setLevel(logging.ERROR)
 
+# Получаване на абсолютния път до директорията на скрипта
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 @app.route('/data')
 async def data():
     return jsonify(latest_data)
@@ -90,6 +93,15 @@ async def data():
 @app.route('/health')
 async def health():
     return '', 200
+
+# Маршрут за основната страница
+@app.route('/')
+async def index():
+    try:
+        return await send_from_directory(BASE_DIR, 'index.html')
+    except Exception as e:
+        logger.error(f"Error serving index.html: {e}")
+        return jsonify({"error": "Index file not found."}), 404
 
 ############################################
 # SPI Initialization
