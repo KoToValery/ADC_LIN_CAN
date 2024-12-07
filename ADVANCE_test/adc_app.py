@@ -331,7 +331,7 @@ async def health():
 mqtt_client = mqtt.Client(protocol=mqtt.MQTTv5)
 if MQTT_USER and MQTT_PASS:
     mqtt_client.username_pw_set(MQTT_USER, MQTT_PASS)
-
+logger.info(f"Will connect to MQTT with user={MQTT_USER}, pass_length={len(MQTT_PASS)}")
 def on_mqtt_connect(client, userdata, flags, reasonCode, properties=None):
     if reasonCode == 0:
         logger.info("Connected to MQTT Broker!")
