@@ -18,6 +18,7 @@ from hypercorn.config import Config
 from datetime import datetime
 import serial_asyncio
 
+# Настройка на логиране
 logging.basicConfig(
     level=logging.DEBUG,
     format='[%(asctime)s] [%(name)s] %(levelname)s: %(message)s',
@@ -27,6 +28,7 @@ logger = logging.getLogger('ADC & LIN')
 
 logger.info("ADC & LIN Advanced Add-on started.")
 
+# Конфигурация
 HTTP_PORT = 8099
 SPI_BUS = 1
 SPI_DEVICE = 1
@@ -48,6 +50,7 @@ if not SUPERVISOR_TOKEN:
     logger.error("SUPERVISOR_TOKEN is not set. Exiting.")
     exit(1)
 
+# Инициализация на данните
 latest_data = {
     "adc_channels": {
         "channel_0": {"voltage": 0.0, "unit": "V"},
@@ -65,8 +68,10 @@ latest_data = {
     }
 }
 
+# Инициализация на Quart приложението
 app = Quart(__name__)
 
+# Ограничаване на логовете на Quart
 quart_log = logging.getLogger('quart.app')
 quart_log.setLevel(logging.ERROR)
 
@@ -105,7 +110,7 @@ async def ws_route():
         clients.remove(websocket._get_current_object())
         logger.info("WebSocket connection closed.")
 
-# Initialize SPI
+# Инициализация на SPI
 spi = spidev.SpiDev()
 try:
     spi.open(SPI_BUS, SPI_DEVICE)
@@ -115,7 +120,7 @@ try:
 except Exception as e:
     logger.error(f"SPI initialization error: {e}")
 
-# Define PIDs
+# Дефиниране на PID за различните команди
 PID_TEMPERATURE = 0xC1
 PID_LED_CONTROL = 0xC2
 
@@ -138,7 +143,7 @@ class LINMasterProtocol(asyncio.Protocol):
 
     def connection_lost(self, exc):
         logger.warning("LINMaster: UART connection lost.")
-        # Attempt to reconnect or handle accordingly
+        # Опитайте да се свържете отново
         asyncio.create_task(self.master.handle_connection_lost())
 
     def process_byte(self, byte):
@@ -148,14 +153,14 @@ class LINMasterProtocol(asyncio.Protocol):
                 logger.debug("LINMaster: SYNC byte detected.")
         elif self.state == 'WAIT_PID':
             self.current_frame['pid'] = byte
-            # Determine expected data length based on PID
+            # Определяне на очакваната дължина на данните въз основа на PID
             if byte == PID_TEMPERATURE:
                 self.expected_bytes = 3  # 2 data bytes + 1 checksum
                 self.current_frame['data'] = bytearray()
                 self.state = 'READ_DATA'
                 logger.debug(f"LINMaster: PID {byte:#04x} detected. Expecting {self.expected_bytes} bytes.")
             elif byte == PID_LED_CONTROL:
-                self.expected_bytes = 3  # 1 data byte + 1 checksum
+                self.expected_bytes = 2  # 1 data byte + 1 checksum
                 self.current_frame['data'] = bytearray()
                 self.state = 'READ_DATA'
                 logger.debug(f"LINMaster: PID {byte:#04x} detected. Expecting {self.expected_bytes} bytes.")
@@ -177,18 +182,18 @@ class LINMasterProtocol(asyncio.Protocol):
         data = self.current_frame.get('data')
         checksum = self.current_frame.get('checksum')
 
-        # Calculate checksum
+        # Изчисляване на Checksum
         calculated_checksum = self.master.calculate_checksum([pid] + list(data))
         if checksum == calculated_checksum:
             if pid == PID_TEMPERATURE:
-                # Interpret data as temperature
+                # Интерпретиране на данните като температура
                 temperature = struct.unpack('<H', data)[0] / 100.0
                 logger.info(f"LINMaster: Valid temperature response. Temperature: {temperature:.2f} °C")
                 self.master.latest_data["slave_sensors"]["slave_1"]["value"] = temperature
             elif pid == PID_LED_CONTROL:
-                # Interpret data as LED status (if needed)
+                # Интерпретиране на данните като статус на LED (ако е необходимо)
                 logger.info(f"LINMaster: LED Control Response received.")
-                # Implement any response handling if necessary
+                # Имплементирайте обработка на отговора, ако е необходимо
         else:
             logger.warning(f"LINMaster: Checksum mismatch! Received: 0x{checksum:02X}, Calculated: 0x{calculated_checksum:02X}")
 
@@ -245,8 +250,7 @@ class LINMaster:
     async def send_break(self):
         if self.transport:
             try:
-                # Simulate BREAK by setting the line low for BREAK_DURATION
-                # Note: actual implementation might vary based on hardware
+                # Симулиране на BREAK чрез задаване на break_condition
                 self.transport.serial.break_condition = True
                 logger.debug(f"LINMaster: Sending BREAK condition for {self.BREAK_DURATION} seconds.")
                 await asyncio.sleep(self.BREAK_DURATION)
@@ -278,8 +282,7 @@ class LINMaster:
         pid = self.calculate_pid(identifier)
         logger.info(f"LINMaster: Sending temperature request to identifier: 0x{identifier:02X}")
         await self.send_header(pid)
-        # The response will be handled asynchronously by the protocol
-        # Wait for RESPONSE_TIMEOUT to allow response to be received
+        # Отговорът ще бъде обработен асинхронно от протокола
         await asyncio.sleep(self.RESPONSE_TIMEOUT)
         temperature = self.latest_data["slave_sensors"]["slave_1"]["value"]
         if temperature > 0:
@@ -318,6 +321,7 @@ class LINMaster:
         temperature = await self.send_request_frame(identifier)
         return temperature
 
+# Инстанциране на LINMaster с latest_data
 lin_master = LINMaster(latest_data=latest_data)
 
 buffers_ma = {i: deque(maxlen=MOVING_AVERAGE_WINDOW) for i in range(6)}
@@ -405,10 +409,10 @@ async def process_adc_and_lin():
             await asyncio.gather(*(client.send(data_to_send) for client in clients))
             logger.debug("Sent updated data to WebSocket clients.")
 
-        await asyncio.sleep(5)  # Increased interval to 5 seconds
+        await asyncio.sleep(5)  # Увеличен интервал до 5 секунди
 
 async def main():
-    # Start LINMaster connection
+    # Стартиране на LINMaster връзката
     await lin_master.connect()
 
     supervisor_task = asyncio.create_task(supervisor_ws_client())
@@ -430,6 +434,8 @@ if __name__ == '__main__':
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Shutting down ADC & LIN Advanced Add-on...")
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
     finally:
         spi.close()
         if lin_master.transport and lin_master.transport.serial.is_open:
