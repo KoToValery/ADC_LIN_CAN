@@ -42,6 +42,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger('ADC & LIN')
 
+logger.info("ADC & LIN Add-on started.")
+
 ############################################
 # Configuration
 ############################################
