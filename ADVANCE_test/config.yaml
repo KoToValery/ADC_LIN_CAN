@@ -1,6 +1,6 @@
-name: "ADC & LIN"
-version: "1.0.3"
-slug: "adc_lin"
+name: "ADC & LIN_advanced"
+version: "1.0.1"
+slug: "adc_lin_advanced"
 description: "Add-on for visualizing ADC and LIN communication with automatic HA discovery"
 arch:
   - armhf
@@ -11,7 +11,7 @@ arch:
 startup: "services"
 ingress: true
 panel_icon: mdi:chip
-panel_title: "ADC & LIN"
+panel_title: "advanced ADC & LIN"
 ingress_port: 8099
 ports:
   8765/tcp: 8765  # WebSocket 
