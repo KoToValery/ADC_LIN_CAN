@@ -6,7 +6,7 @@
 # Project CIS3
 # Hardware PCB V3.0
 # Python 3
-#
+
 # Features:
 # 1. ADC reading (Voltage channels 0-3, Resistance channels 4-5) - async tasks
 # 2. LIN Communication for LED control & temperature reading (LINMaster class integrated)
@@ -22,16 +22,20 @@ from quart import Quart, jsonify
 import logging
 import serial
 import struct
+from hypercorn.asyncio import serve
+from hypercorn.config import Config
 
 ############################################
 # Logging Setup
 ############################################
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.DEBUG,  # Можете да промените нивото на логване тук (DEBUG, INFO, WARNING, ERROR, CRITICAL)
     format='[%(asctime)s] [%(name)s] %(levelname)s: %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger('ADC & LIN')
+
+logger.info("ADC & LIN Add-on started.")
 
 ############################################
 # Configuration
@@ -79,14 +83,25 @@ app = Quart(__name__)
 quart_log = logging.getLogger('quart.app')
 quart_log.setLevel(logging.ERROR)
 
+@app.route('/data')
+async def data():
+    return jsonify(latest_data)
+
+@app.route('/health')
+async def health():
+    return '', 200
+
 ############################################
 # SPI Initialization
 ############################################
 spi = spidev.SpiDev()
-spi.open(SPI_BUS, SPI_DEVICE)
-spi.max_speed_hz = SPI_SPEED
-spi.mode = SPI_MODE
-logger.info("SPI interface for ADC initialized.")
+try:
+    spi.open(SPI_BUS, SPI_DEVICE)
+    spi.max_speed_hz = SPI_SPEED
+    spi.mode = SPI_MODE
+    logger.info("SPI interface for ADC initialized.")
+except Exception as e:
+    logger.error(f"SPI initialization error: {e}")
 
 ############################################
 # LINMaster Class
@@ -179,10 +194,15 @@ buffers_ma = {i: deque(maxlen=MOVING_AVERAGE_WINDOW) for i in range(6)}
 def read_adc(channel):
     if 0 <= channel <= 7:
         cmd = [1, (8 + channel) << 4, 0]
-        adc = spi.xfer2(cmd)
-        value = ((adc[1] & 3) << 8) + adc[2]
-        logger.debug(f"ADC Channel {channel} raw value: {value}")
-        return value
+        try:
+            adc = spi.xfer2(cmd)
+            value = ((adc[1] & 3) << 8) + adc[2]
+            logger.debug(f"ADC Channel {channel} raw value: {value}")
+            return value
+        except Exception as e:
+            logger.error(f"Error reading ADC channel {channel}: {e}")
+            return 0
+    logger.warning(f"Invalid ADC channel: {channel}")
     return 0
 
 def process_adc_data(channel):
@@ -193,19 +213,11 @@ def process_adc_data(channel):
         voltage = (average / ADC_RESOLUTION) * VREF * VOLTAGE_MULTIPLIER
         return round(voltage, 2)
     else:
+        if average == 0:
+            logger.warning(f"ADC Channel {channel} average is zero, cannot calculate resistance.")
+            return 0.0
         resistance = ((RESISTANCE_REFERENCE * (ADC_RESOLUTION - average)) / average) / 10
         return round(resistance, 2)
-
-############################################
-# Quart Routes
-############################################
-@app.route('/data')
-async def data():
-    return jsonify(latest_data)
-
-@app.route('/health')
-async def health():
-    return '', 200
 
 ############################################
 # Async Tasks
@@ -221,13 +233,20 @@ async def process_adc_and_lin():
         # Control LED based on channel 0 voltage
         channel_0_voltage = latest_data["adc_channels"]["channel_0"]["voltage"]
         led_state = "ON" if channel_0_voltage > LED_VOLTAGE_THRESHOLD else "OFF"
-        lin_master.control_led(0x01, led_state)
-        latest_data["slave_sensors"]["slave_1"]["led_state"] = led_state
+        success = lin_master.control_led(0x01, led_state)
+        if success:
+            latest_data["slave_sensors"]["slave_1"]["led_state"] = led_state
+            logger.info(f"LED turned {led_state} based on channel 0 voltage: {channel_0_voltage} V")
+        else:
+            logger.warning(f"Failed to send LED {led_state} command.")
 
         # Read temperature from slave
         temperature = lin_master.read_temperature(0x01)
         if temperature is not None:
             latest_data["slave_sensors"]["slave_1"]["value"] = temperature
+            logger.debug(f"Slave 1 Temperature: {temperature:.2f} °C")
+        else:
+            logger.warning("Failed to read temperature from slave.")
 
         await asyncio.sleep(1)
 
@@ -235,8 +254,20 @@ async def process_adc_and_lin():
 # Main Function
 ############################################
 async def main():
+    # Start Quart app with Hypercorn
+    config = Config()
+    config.bind = [f"0.0.0.0:{HTTP_PORT}"]
+    logger.info(f"Starting Quart HTTP server on port {HTTP_PORT}")
+    quart_task = asyncio.create_task(serve(app, config))
+    logger.info("Quart HTTP server started.")
+
+    # Start ADC and LIN processing task
+    adc_lin_task = asyncio.create_task(process_adc_and_lin())
+    logger.info("ADC and LIN processing task started.")
+
     await asyncio.gather(
-        process_adc_and_lin()
+        quart_task,
+        adc_lin_task
     )
 
 ############################################
@@ -244,10 +275,6 @@ async def main():
 ############################################
 if __name__ == '__main__':
     try:
-        # Run Quart in a separate thread
-        from threading import Thread
-        Thread(target=lambda: app.run(host='0.0.0.0', port=HTTP_PORT), daemon=True).start()
-        logger.info(f"Quart HTTP server started on port {HTTP_PORT}")
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Shutting down ADC & LIN Add-on...")
@@ -255,3 +282,4 @@ if __name__ == '__main__':
         spi.close()
         if lin_master.ser:
             lin_master.ser.close()
+        logger.info("ADC & LIN Add-on has been shut down.")
