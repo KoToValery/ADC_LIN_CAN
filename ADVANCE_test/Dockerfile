@@ -15,7 +15,7 @@ RUN pip3 install --no-cache-dir \
     websocket-client \
     spidev \
     pyserial \
-    paho-mqtt
+    hypercorn 
 
 # Копиране на приложните файлове в контейнера
 COPY adc_app.py /
