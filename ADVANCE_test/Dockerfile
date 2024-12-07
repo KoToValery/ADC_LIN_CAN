@@ -19,7 +19,6 @@ RUN pip3 install --no-cache-dir \
 
 # Копиране на приложните файлове в контейнера
 COPY adc_app.py /
-COPY lin_master.py /
 COPY index.html /
 
 # Определяне на командата за стартиране на приложението
