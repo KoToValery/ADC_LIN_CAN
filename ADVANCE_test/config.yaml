@@ -1,5 +1,5 @@
 name: "ADC & LIN_advanced"
-version: "1.0.4.5"
+version: "1.0.4.6"
 slug: "adc_lin_advanced"
 description: "Add-on for visualizing ADC and LIN communication with automatic HA discovery"
 arch:
