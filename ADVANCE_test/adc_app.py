@@ -116,8 +116,7 @@ except Exception as e:
 class LINMaster:
     def __init__(self, uart_port='/dev/ttyAMA2', uart_baudrate=9600, uart_timeout=1):
         self.SYNC_BYTE = 0x55
-        self.LED_ON_COMMAND = 0x01
-        self.LED_OFF_COMMAND = 0x00
+        self.PID_BYTE = 0x50
         self.BREAK_DURATION = 1.35e-3
         self.RESPONSE_TIMEOUT = 0.1
 
