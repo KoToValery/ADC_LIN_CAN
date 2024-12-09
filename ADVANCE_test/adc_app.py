@@ -214,18 +214,69 @@ def process_response(response):
     else:
         log_message("Invalid response length.")
 
+buffers_ma = {i: deque(maxlen=MOVING_AVERAGE_WINDOW) for i in range(6)}
+
+def read_adc(channel):
+    """
+    Чете суровата стойност на ADC от конкретен канал.
+    """
+    if 0 <= channel <= 7:
+        cmd = [1, (8 + channel) << 4, 0]
+        try:
+            adc = spi.xfer2(cmd)
+            value = ((adc[1] & 3) << 8) + adc[2]
+            logger.debug(f"ADC Channel {channel} raw value: {value}")
+            return value
+        except Exception as e:
+            logger.error(f"Error reading ADC channel {channel}: {e}")
+            return 0
+    logger.warning(f"Invalid ADC channel: {channel}")
+    return 0
+
+def process_adc_data(channel):
+    """
+    Изчислява средната стойност за ADC канал и я конвертира във волтаж или съпротивление.
+    """
+    raw_value = read_adc(channel)
+    buffers_ma[channel].append(raw_value)
+    average = sum(buffers_ma[channel]) / len(buffers_ma[channel])
+    if channel < 4:
+        voltage = (average / ADC_RESOLUTION) * VREF * VOLTAGE_MULTIPLIER
+        return round(voltage, 2)
+    else:
+        if average == 0:
+            logger.warning(f"ADC Channel {channel} average is zero, cannot calculate resistance.")
+            return 0.0
+        resistance = ((RESISTANCE_REFERENCE * (ADC_RESOLUTION - average)) / average) / 10
+        return round(resistance, 2)
+
 async def process_adc_and_lin():
     """
-    Основен цикъл за LIN комуникацията.
+    Основен цикъл за LIN и ADC комуникацията.
     """
     while True:
+        # Обработка на ADC
+        for i in range(6):
+            if i < 4:
+                voltage = process_adc_data(i)
+                latest_data["adc_channels"][f"channel_{i}"]["voltage"] = voltage
+                logger.debug(f"ADC Channel {i} Voltage: {voltage} V")
+            else:
+                resistance = process_adc_data(i)
+                latest_data["adc_channels"][f"channel_{i}"]["resistance"] = resistance
+                logger.debug(f"ADC Channel {i} Resistance: {resistance} Ω")
+
+        # Обработка на LIN
         send_header()
         response = read_response()
         process_response(response)
+
+        # Изпращане на данни към WebSocket клиенти
         if clients:
             data_to_send = json.dumps(latest_data)
             await asyncio.gather(*(client.send(data_to_send) for client in clients))
             logger.debug("Sent updated data to WebSocket clients.")
+
         await asyncio.sleep(2)  # Интервал между заявките
 
 async def main():
