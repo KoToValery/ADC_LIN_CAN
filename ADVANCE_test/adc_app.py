@@ -9,14 +9,13 @@ import spidev
 from collections import deque
 from quart import Quart, jsonify, send_from_directory, websocket
 import logging
-import serial
+import serial_asyncio
 import struct
 import json
 import websockets
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
 from datetime import datetime
-import serial_asyncio
 
 # Настройка на логиране
 logging.basicConfig(
@@ -40,7 +39,7 @@ ADC_RESOLUTION = 1023.0
 VOLTAGE_MULTIPLIER = 3.31
 RESISTANCE_REFERENCE = 10000
 MOVING_AVERAGE_WINDOW = 10
-LED_VOLTAGE_THRESHOLD = 3.0
+LED_VOLTAGE_THRESHOLD = 3.0  # Може да бъде премахнато, ако вече не се използва
 
 SUPERVISOR_WS_URL = os.getenv("SUPERVISOR_WS_URL", "ws://supervisor/core/websocket")
 SUPERVISOR_TOKEN = os.getenv("SUPERVISOR_TOKEN")
@@ -63,7 +62,7 @@ latest_data = {
     "slave_sensors": {
         "slave_1": {
             "value": 0.0,
-            "led_state": "OFF"
+            # "led_state": "OFF"  # Премахнато, тъй като няма управление на LED
         }
     }
 }
@@ -121,8 +120,7 @@ except Exception as e:
     logger.error(f"SPI initialization error: {e}")
 
 # Дефиниране на PID за различните команди
-PID_TEMPERATURE = 0xC1
-PID_LED_CONTROL = 0xC2
+PID_TEMPERATURE = 0x50  # Променено спрямо #Working кода
 
 class LINMasterProtocol(asyncio.Protocol):
     def __init__(self, master):
@@ -152,15 +150,9 @@ class LINMasterProtocol(asyncio.Protocol):
                 self.state = 'WAIT_PID'
                 logger.debug("LINMaster: SYNC byte detected.")
         elif self.state == 'WAIT_PID':
-            self.current_frame['pid'] = byte
-            # Определяне на очакваната дължина на данните въз основа на PID
             if byte == PID_TEMPERATURE:
+                self.current_frame['pid'] = byte
                 self.expected_bytes = 3  # 2 data bytes + 1 checksum
-                self.current_frame['data'] = bytearray()
-                self.state = 'READ_DATA'
-                logger.debug(f"LINMaster: PID {byte:#04x} detected. Expecting {self.expected_bytes} bytes.")
-            elif byte == PID_LED_CONTROL:
-                self.expected_bytes = 2  # 1 data byte + 1 checksum
                 self.current_frame['data'] = bytearray()
                 self.state = 'READ_DATA'
                 logger.debug(f"LINMaster: PID {byte:#04x} detected. Expecting {self.expected_bytes} bytes.")
@@ -190,10 +182,6 @@ class LINMasterProtocol(asyncio.Protocol):
                 temperature = struct.unpack('<H', data)[0] / 100.0
                 logger.info(f"LINMaster: Valid temperature response. Temperature: {temperature:.2f} °C")
                 self.master.latest_data["slave_sensors"]["slave_1"]["value"] = temperature
-            elif pid == PID_LED_CONTROL:
-                # Интерпретиране на данните като статус на LED (ако е необходимо)
-                logger.info(f"LINMaster: LED Control Response received.")
-                # Имплементирайте обработка на отговора, ако е необходимо
         else:
             logger.warning(f"LINMaster: Checksum mismatch! Received: 0x{checksum:02X}, Calculated: 0x{calculated_checksum:02X}")
 
@@ -206,7 +194,6 @@ class LINMaster:
     def __init__(self, uart_port='/dev/ttyAMA2', uart_baudrate=9600, uart_timeout=1, latest_data=None):
         self.SYNC_BYTE = 0x55
         self.PID_TEMPERATURE = PID_TEMPERATURE
-        self.PID_LED_CONTROL = PID_LED_CONTROL
         self.BREAK_DURATION = 1.35e-3
         self.RESPONSE_TIMEOUT = 0.1
 
@@ -292,31 +279,6 @@ class LINMaster:
             logger.warning("LINMaster: Failed to read temperature.")
             return None
 
-    async def send_data_frame(self, identifier, data_bytes):
-        pid = self.calculate_pid(identifier)
-        logger.info(f"LINMaster: Sending LED command to identifier: 0x{identifier:02X} with data: {data_bytes.hex()}")
-        await self.send_header(pid)
-        csum = self.calculate_checksum([pid] + list(data_bytes))
-        frame = data_bytes + bytes([csum])
-        try:
-            self.transport.write(frame)
-            logger.debug(f"LINMaster: Sent Data Frame (hex): {frame.hex()}")
-            return True
-        except Exception as e:
-            logger.error(f"LINMaster: Error sending Data Frame: {e}")
-            return False
-
-    async def control_led(self, identifier, state):
-        command = 0x01 if state == "ON" else 0x00
-        logger.info(f"LINMaster: Sending LED command: {state}")
-        success = await self.send_data_frame(identifier, bytes([command]))
-        if success:
-            self.latest_data["slave_sensors"]["slave_1"]["led_state"] = state
-            logger.info(f"LINMaster: LED {state} command successfully sent.")
-        else:
-            logger.warning(f"LINMaster: Failed to send LED {state} command.")
-        return success
-
     async def read_slave_temperature(self, identifier):
         temperature = await self.send_request_frame(identifier)
         return temperature
@@ -388,15 +350,8 @@ async def process_adc_and_lin():
                 latest_data["adc_channels"][f"channel_{i}"]["resistance"] = resistance
                 logger.debug(f"ADC Channel {i} Resistance: {resistance} Ω")
 
-        channel_0_voltage = latest_data["adc_channels"]["channel_0"]["voltage"]
-        led_state = "ON" if channel_0_voltage > LED_VOLTAGE_THRESHOLD else "OFF"
-        success = await lin_master.control_led(0x01, led_state)
-        if success:
-            latest_data["slave_sensors"]["slave_1"]["led_state"] = led_state
-            logger.info(f"LED turned {led_state} based on channel 0 voltage: {channel_0_voltage} V")
-        else:
-            logger.warning(f"Failed to send LED {led_state} command.")
-
+        # Премахнато управление на LED
+        # Вместо това само изпращаме заявка за температура
         temperature = await lin_master.read_slave_temperature(0x01)
         if temperature is not None:
             latest_data["slave_sensors"]["slave_1"]["value"] = temperature
