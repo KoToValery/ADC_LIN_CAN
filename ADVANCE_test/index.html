@@ -32,7 +32,6 @@
             margin: 0;
             font-size: 3em;
             color: #00e6e6;
-            text-shadow: 0 0 10px #00e6e6, 0 0 20px #0ff;
         }
 
         .section {
@@ -42,7 +41,6 @@
         .section h2 {
             font-size: 1.8em;
             margin-bottom: 20px;
-            text-shadow: 0 0 5px #00e6e6;
         }
 
         .channels-grid, .slaves-grid {
@@ -69,7 +67,6 @@
             font-weight: bold;
             color: #4fd1c5;
             margin: 10px 0;
-            text-shadow: 0 0 5px #0ff;
         }
         .value-bar {
             height: 10px;
@@ -83,44 +80,8 @@
             background: linear-gradient(90deg, #4fd1c5 0%, #63b3ed 100%);
             transition: width 0.3s ease;
         }
-        .led-indicator {
-            width: 60px;
-            height: 60px;
-            border-radius: 50%;
-            background: #2d3748;
-            position: relative;
-            margin: 20px auto;
-            box-shadow: 0 0 10px #111 inset;
-        }
-        .led-on {
-            background: #48bb78;
-            box-shadow: 0 0 20px #48bb78, 0 0 40px #48bb78;
-        }
 
-        /* Neon Animations */
-        .header::before,
-        .header::after {
-            content: '';
-            position: absolute;
-            width: 200px;
-            height: 200px;
-            border: 2px solid #0ff;
-            border-radius: 50%;
-            opacity: 0.6;
-            animation: pulse 4s infinite alternate;
-        }
-        .header::before {
-            top: -50px;
-            left: calc(50% - 100px);
-        }
-        .header::after {
-            bottom: -50px;
-            right: calc(50% - 100px);
-        }
-        @keyframes pulse {
-            0% {transform: scale(1); opacity: 0.6;}
-            100% {transform: scale(1.3); opacity: 0.1;}
-        }
+        /* Removed Neon Animations and Text Shadows */
     </style>
 </head>
 <body>
@@ -189,7 +150,10 @@
                 <div class="card">
                     <h3>Temperature Sensor</h3>
                     <div class="value-display" id="temperature_value">0.0°C</div>
-                    <div class="led-indicator" id="led_indicator"></div>
+                </div>
+                <div class="card">
+                    <h3>Humidity Sensor</h3>
+                    <div class="value-display" id="humidity_value">0.0%</div>
                 </div>
             </div>
         </div>
@@ -228,17 +192,11 @@
         
                 // Update temperature
                 const temperatureValue = document.getElementById('temperature_value');
-                temperatureValue.textContent = `${data.slave_sensors.slave_1.value}°C`;
+                temperatureValue.textContent = `${data.slave_sensors.slave_1.Temperature}°C`;
         
-                // Update LED indicator
-                const ledIndicator = document.getElementById('led_indicator');
-                const ledState = data.slave_sensors.slave_1.led_state;
-                if (ledState === "ON") {
-                    ledIndicator.classList.add('led-on');
-                } else {
-                    ledIndicator.classList.remove('led-on');
-                }
-                ledIndicator.textContent = ledState;
+                // Update humidity
+                const humidityValue = document.getElementById('humidity_value');
+                humidityValue.textContent = `${data.slave_sensors.slave_1.Humidity}%`;
             };
         });
     </script>
