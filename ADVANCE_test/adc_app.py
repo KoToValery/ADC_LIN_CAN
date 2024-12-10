@@ -48,8 +48,17 @@ if not SUPERVISOR_TOKEN:
 
 # LIN Constants
 SYNC_BYTE = 0x55
-PID_TEMPERATURE = 0x50  # Статичен PID за температура
 BREAK_DURATION = 1.35e-3  # 1.35ms break signal
+
+# PID Definitions
+PID_TEMPERATURE = 0x50
+PID_HUMIDITY = 0x51  # Нов PID за влажност
+
+# PID Dictionary
+PID_DICT = {
+    PID_TEMPERATURE: 'Temperature',
+    PID_HUMIDITY: 'Humidity'
+}
 
 # Инициализация на данните
 latest_data = {
@@ -63,7 +72,8 @@ latest_data = {
     },
     "slave_sensors": {
         "slave_1": {
-            "value": 0.0
+            "Temperature": 0.0,
+            "Humidity": 0.0
         }
     }
 }
@@ -80,7 +90,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 clients = set()
 
 @app.route('/data')
-async def data():
+async def data_route():
     return jsonify(latest_data)
 
 @app.route('/health')
@@ -123,11 +133,16 @@ except Exception as e:
 # UART Configuration
 UART_PORT = '/dev/ttyAMA2'
 UART_BAUDRATE = 9600
-ser = serial.Serial(UART_PORT, UART_BAUDRATE, timeout=1)
+try:
+    ser = serial.Serial(UART_PORT, UART_BAUDRATE, timeout=1)
+    logger.info(f"UART interface initialized on {UART_PORT} at {UART_BAUDRATE} baud.")
+except Exception as e:
+    logger.error(f"UART initialization error: {e}")
+    exit(1)
 
 # Log helper
-def log_message(message):
-    print(f"[{datetime.now()}] [MASTER] {message}", flush=True)
+def log_message(message, role="MASTER"):
+    print(f"[{datetime.now()}] [{role}] {message}", flush=True)
 
 def enhanced_checksum(data):
     """
@@ -146,73 +161,88 @@ def send_break():
     ser.break_condition = False
     time.sleep(0.0001)
 
-def send_header():
+def send_header(pid):
     """
     Изпраща SYNC + PID хедър към слейва и изчиства UART буфера.
     """
     ser.reset_input_buffer()  # Изчистване на UART буфера преди изпращане
     send_break()
-    ser.write(bytes([SYNC_BYTE, PID_TEMPERATURE]))
-    log_message(f"Sent Header: SYNC=0x{SYNC_BYTE:02X}, PID=0x{PID_TEMPERATURE:02X}")
+    ser.write(bytes([SYNC_BYTE, pid]))
+    log_message(f"Sent Header: SYNC=0x{SYNC_BYTE:02X}, PID=0x{pid:02X} ({PID_DICT.get(pid, 'Unknown')})")
     time.sleep(0.1)  # Кратка пауза за обработка от слейва
 
-def read_response():
+def read_response(expected_data_length, pid):
     """
     Чете отговора от слейва, като търси SYNC + PID и след това извлича данните.
     """
-    expected_length = 3  # 3 байта: 2 данни + 1 checksum
+    expected_length = expected_data_length  # 3 байта: 2 данни + 1 checksum
     start_time = time.time()
-    response = bytearray()
-    while (time.time() - start_time) < 1.0:  # 1 секунда таймаут
+    buffer = bytearray()
+    sync_pid = bytes([SYNC_BYTE, pid])
+
+    while (time.time() - start_time) < 2.0:  # Увеличен таймаут до 2 секунди
         if ser.in_waiting > 0:
-            response.extend(ser.read(ser.in_waiting))
+            data = ser.read(ser.in_waiting)
+            buffer.extend(data)
+            log_message(f"Received bytes: {data.hex()}", role="MASTER")
+
+            # Търсене на SYNC + PID
+            index = buffer.find(sync_pid)
+            if index != -1:
+                log_message(f"Found SYNC + PID at index {index}: {buffer[index:index+2].hex()}", role="MASTER")
+                # Изваждаме всичко преди и включително SYNC + PID
+                buffer = buffer[index + 2:]
+                log_message(f"Filtered Buffer after SYNC + PID: {buffer.hex()}", role="MASTER")
+
+                # Проверка дали има достатъчно байтове за данните и контролна сума
+                if len(buffer) >= expected_length:
+                    response = buffer[:expected_length]
+                    log_message(f"Filtered Response: {response.hex()}", role="MASTER")
+                    return response
+                else:
+                    # Изчакване за останалите данни
+                    while len(buffer) < expected_length and (time.time() - start_time) < 2.0:
+                        if ser.in_waiting > 0:
+                            more_data = ser.read(ser.in_waiting)
+                            buffer.extend(more_data)
+                            log_message(f"Received bytes while waiting: {more_data.hex()}", role="MASTER")
+                        else:
+                            time.sleep(0.01)
+                    if len(buffer) >= expected_length:
+                        response = buffer[:expected_length]
+                        log_message(f"Filtered Response after waiting: {response.hex()}", role="MASTER")
+                        return response
         else:
             time.sleep(0.01)
 
-    if response:
-        log_message(f"Raw Received Data: {response.hex()}")
+    log_message("No valid response received within timeout.", role="MASTER")
+    return None
 
-        # Търсене на SYNC + PID
-        sync_pid = bytes([SYNC_BYTE, PID_TEMPERATURE])
-        index = response.find(sync_pid)
-        if index != -1:
-            log_message(f"Found SYNC + PID at position {index}: SYNC=0x{SYNC_BYTE:02X}, PID=0x{PID_TEMPERATURE:02X}")
-            # Изваждаме всичко преди и включително SYNC + PID
-            response = response[index + 2:]
-            log_message(f"Filtered Response: {response.hex()}")
-
-            # Проверка дали има достатъчно байтове за данните и контролна сума
-            if len(response) >= expected_length:
-                data = response[:expected_length]
-                return data
-            else:
-                log_message("Incomplete response received after SYNC + PID.")
-                return None
-        else:
-            log_message("SYNC + PID not found in response.")
-            return None
-    else:
-        log_message("No data received.")
-        return None
-
-def process_response(response):
+def process_response(response, pid):
     """
-    Обработва получения отговор, проверява контролната сума и извежда температурата.
+    Обработва получения отговор, проверява контролната сума и извежда данните.
     """
     if response and len(response) == 3:
-        data = response[:2]  # Първите 2 байта са данни
+        data = response[:2]
         received_checksum = response[2]
-        calculated_checksum = enhanced_checksum([PID_TEMPERATURE] + list(data))
-        log_message(f"Received Checksum: 0x{received_checksum:02X}, Calculated Checksum: 0x{calculated_checksum:02X}")
+        calculated_checksum = enhanced_checksum([pid] + list(data))
+        log_message(f"Received Checksum: 0x{received_checksum:02X}, Calculated Checksum: 0x{calculated_checksum:02X}", role="MASTER")
+
         if received_checksum == calculated_checksum:
-            # Интерпретиране на температурата в малко-ендий формат
-            temperature = int.from_bytes(data, 'little') / 100.0
-            log_message(f"Temperature: {temperature:.2f}°C")
-            latest_data["slave_sensors"]["slave_1"]["value"] = temperature
+            value = int.from_bytes(data, 'little') / 100.0
+            sensor = PID_DICT.get(pid, 'Unknown')
+            if sensor == 'Temperature':
+                log_message(f"Temperature: {value:.2f}°C", role="MASTER")
+                latest_data["slave_sensors"]["slave_1"]["Temperature"] = value
+            elif sensor == 'Humidity':
+                log_message(f"Humidity: {value:.2f}%", role="MASTER")
+                latest_data["slave_sensors"]["slave_1"]["Humidity"] = value
+            else:
+                log_message(f"Unknown PID {pid}: Value={value}", role="MASTER")
         else:
-            log_message("Checksum mismatch.")
+            log_message("Checksum mismatch.", role="MASTER")
     else:
-        log_message("Invalid response length.")
+        log_message("Invalid response length.", role="MASTER")
 
 buffers_ma = {i: deque(maxlen=MOVING_AVERAGE_WINDOW) for i in range(6)}
 
@@ -267,9 +297,13 @@ async def process_adc_and_lin():
                 logger.debug(f"ADC Channel {i} Resistance: {resistance} Ω")
 
         # Обработка на LIN
-        send_header()
-        response = read_response()
-        process_response(response)
+        for pid in PID_DICT.keys():
+            send_header(pid)
+            # Изчакване да се изпълни асинхронно, за да не блокира event loop
+            response = await asyncio.to_thread(read_response, 3, pid)
+            if response:
+                process_response(response, pid)
+            await asyncio.sleep(0.1)  # Кратка пауза между заявките
 
         # Изпращане на данни към WebSocket клиенти
         if clients:
@@ -277,7 +311,7 @@ async def process_adc_and_lin():
             await asyncio.gather(*(client.send(data_to_send) for client in clients))
             logger.debug("Sent updated data to WebSocket clients.")
 
-        await asyncio.sleep(2)  # Интервал между заявките
+        await asyncio.sleep(2)  # Интервал между цикли
 
 async def main():
     """
