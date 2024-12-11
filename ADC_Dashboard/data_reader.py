@@ -38,8 +38,8 @@ EMA_ALPHA = 0.1
 
 MQTT_BROKER = 'localhost'  # Change if broker is on another machine
 MQTT_PORT = 1883
-MQTT_USERNAME = 'your_mqtt_username'  # Set if authentication is enabled
-MQTT_PASSWORD = 'your_mqtt_password'
+MQTT_USERNAME = 'adc'  # Set if authentication is enabled
+MQTT_PASSWORD = 'adc'
 MQTT_DISCOVERY_PREFIX = 'homeassistant'
 
 # Data storage
