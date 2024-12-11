@@ -1,7 +1,7 @@
 name: "ADC Test Monitoring Dashboard"
-version: "1.0.4"
+version: "1.0.5"
 slug: "adc-dashboard"
-description: "Add-on for monitoring ADC "
+description: "Add-on for monitoring ADC and MQTT broker "
 arch:
   - armhf
   - armv7
