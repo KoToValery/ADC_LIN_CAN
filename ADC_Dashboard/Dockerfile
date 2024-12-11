@@ -16,7 +16,8 @@ RUN pip3 install --no-cache-dir \
     websockets \
     websocket-client \
     spidev \
-    pyserial 
+    pyserial \
+    paho-mqtt
  
 # 
 COPY data_reader.py /
