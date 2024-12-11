@@ -1,5 +1,5 @@
 name: "ADC Test Monitoring Dashboard"
-version: "1.0.5.2"
+version: "1.0.5.3"
 slug: "adc-dashboard"
 description: "Add-on for monitoring ADC and MQTT broker "
 arch:
