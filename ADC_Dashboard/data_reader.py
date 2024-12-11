@@ -11,7 +11,7 @@ import logging
 
 # Конфигурация на логването
 logging.basicConfig(
-    level=logging.DEBUG,  # Поставете на DEBUG за максимално детайлно логване
+    level=logging.DEBUG,  # DEBUG за максимално детайлно логване
     format='%(asctime)s %(levelname)s %(message)s',
     handlers=[
         logging.FileHandler("mqtt_debug.log"),
@@ -88,7 +88,7 @@ def on_log(client, userdata, level, buf):
     if level == mqtt.MQTT_LOG_INFO:
         logger.info(f"MQTT Лог INFO: {buf}")
     elif level == mqtt.MQTT_LOG_NOTICE:
-        logger.notice(f"MQTT Лог NOTICE: {buf}")
+        logger.info(f"MQTT Лог NOTICE: {buf}")
     elif level == mqtt.MQTT_LOG_WARNING:
         logger.warning(f"MQTT Лог WARNING: {buf}")
     elif level == mqtt.MQTT_LOG_ERR:
@@ -164,43 +164,19 @@ def process_channel(channel):
     return calculate_resistance(filtered_ema)
 
 def setup_mqtt_discovery(channel, sensor_type):
-    """Публикуване на MQTT discovery съобщения за Home Assistant."""
+    """Публикуване на минимални MQTT discovery съобщения за Home Assistant."""
     base_topic = f"{MQTT_DISCOVERY_PREFIX}/sensor/cis3/channel_{channel}/config"
     if sensor_type == 'voltage':
         payload = {
             "name": f"CIS3 Channel {channel} Voltage",
             "state_topic": f"cis3/channel_{channel}/voltage",
-            "unit_of_measurement": "V",
-            "value_template": "{{ value_json.voltage }}",
-            "device_class": "voltage",
-            "unique_id": f"cis3_channel_{channel}_voltage",
-            "availability_topic": "cis3/availability",
-            "payload_available": "online",
-            "payload_not_available": "offline",
-            "device": {
-                "identifiers": ["cis3_rpi5"],
-                "name": "CIS3 RPi5",
-                "model": "PCB V3.0",
-                "manufacturer": "biCOMM Design Ltd"
-            }
+            "unique_id": f"cis3_channel_{channel}_voltage"
         }
     elif sensor_type == 'resistance':
         payload = {
             "name": f"CIS3 Channel {channel} Resistance",
             "state_topic": f"cis3/channel_{channel}/resistance",
-            "unit_of_measurement": "Ω",
-            "value_template": "{{ value_json.resistance }}",
-            "device_class": "current",
-            "unique_id": f"cis3_channel_{channel}_resistance",
-            "availability_topic": "cis3/availability",
-            "payload_available": "online",
-            "payload_not_available": "offline",
-            "device": {
-                "identifiers": ["cis3_rpi5"],
-                "name": "CIS3 RPi5",
-                "model": "PCB V3.0",
-                "manufacturer": "biCOMM Design Ltd"
-            }
+            "unique_id": f"cis3_channel_{channel}_resistance"
         }
     mqtt_client.publish(base_topic, json.dumps(payload), retain=True)
     logger.info(f"MQTT Discovery съобщение публикувано за канал {channel} ({sensor_type})")
