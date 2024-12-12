@@ -181,6 +181,7 @@ def setup_mqtt_discovery(channel, sensor_type):
     mqtt_client.publish(base_topic, json.dumps(payload), retain=True)
     logger.info(f"MQTT Discovery съобщение публикувано за канал {channel} ({sensor_type})")
 
+
 # Настройка на MQTT discovery за всички канали
 for ch in range(6):
     if ch < 4:
