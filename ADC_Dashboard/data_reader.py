@@ -74,28 +74,6 @@ def on_disconnect(client, userdata, rc):
         except Exception as e:
             logger.error(f"MQTT Грешка при повторно свързване: {e}")
 
-def on_publish(client, userdata, mid):
-    logger.debug(f"MQTT Съобщение публикувано с MID: {mid}")
-
-def on_subscribe(client, userdata, mid, granted_qos):
-    logger.debug(f"MQTT Абониране успешно с MID: {mid}, QoS: {granted_qos}")
-
-def on_message(client, userdata, msg):
-    logger.debug(f"MQTT Получено съобщение на тема {msg.topic}: {msg.payload.decode()}")
-
-def on_log(client, userdata, level, buf):
-    # Функцията on_log може да генерира много логове. Използвайте с внимание.
-    if level == mqtt.MQTT_LOG_INFO:
-        logger.info(f"MQTT Лог INFO: {buf}")
-    elif level == mqtt.MQTT_LOG_NOTICE:
-        logger.info(f"MQTT Лог NOTICE: {buf}")
-    elif level == mqtt.MQTT_LOG_WARNING:
-        logger.warning(f"MQTT Лог WARNING: {buf}")
-    elif level == mqtt.MQTT_LOG_ERR:
-        logger.error(f"MQTT Лог ERROR: {buf}")
-    else:
-        logger.debug(f"MQTT Лог: {buf}")
-
 # Инициализация на MQTT клиента
 mqtt.Client.connected_flag = False  # Персонализиран флаг за свързаност
 
@@ -105,10 +83,6 @@ mqtt_client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
 # Регистриране на callback функции
 mqtt_client.on_connect = on_connect
 mqtt_client.on_disconnect = on_disconnect
-mqtt_client.on_publish = on_publish
-mqtt_client.on_subscribe = on_subscribe
-mqtt_client.on_message = on_message
-mqtt_client.on_log = on_log  # Може да генерира много логове
 
 try:
     mqtt_client.connect(MQTT_BROKER, MQTT_PORT, keepalive=60)
@@ -155,14 +129,6 @@ def calculate_resistance(adc_value):
     resistance = ((RESISTANCE_REFERENCE * (ADC_RESOLUTION - adc_value)) / adc_value) / 10
     return round(resistance, 2)
 
-def process_channel(channel):
-    raw_value = read_adc(channel)
-    filtered_ma = apply_moving_average(raw_value, channel)
-    filtered_ema = apply_ema(filtered_ma, channel)
-    if channel < 4:
-        return calculate_voltage(filtered_ema)
-    return calculate_resistance(filtered_ema)
-
 def setup_mqtt_discovery(channel, sensor_type):
     """Публикуване на минимални MQTT discovery съобщения за Home Assistant."""
     base_topic = f"{MQTT_DISCOVERY_PREFIX}/sensor/cis3/channel_{channel}/config"
@@ -181,14 +147,6 @@ def setup_mqtt_discovery(channel, sensor_type):
     mqtt_client.publish(base_topic, json.dumps(payload), retain=True)
     logger.info(f"MQTT Discovery съобщение публикувано за канал {channel} ({sensor_type})")
 
-
-# Настройка на MQTT discovery за всички канали
-for ch in range(6):
-    if ch < 4:
-        setup_mqtt_discovery(ch, 'voltage')
-    else:
-        setup_mqtt_discovery(ch, 'resistance')
-
 def publish_sensor_data(channel, data, sensor_type):
     """Публикуване на данни от сензора към MQTT."""
     if sensor_type == 'voltage':
@@ -205,31 +163,27 @@ def publish_availability(status):
     mqtt_client.publish(topic, status, retain=True)
     logger.info(f"Публикувано съобщение на тема {topic}: {status}")
 
-# HTTP маршрути
-@app.route('/')
-def dashboard():
-    return jsonify(latest_data)
+async def setup_discovery():
+    await asyncio.sleep(10)  # Изчакайте 10 секунди за инициализация на MQTT
+    for ch in range(6):
+        if ch < 4:
+            setup_mqtt_discovery(ch, 'voltage')
+        else:
+            setup_mqtt_discovery(ch, 'resistance')
 
-@app.route('/data')
-def data_route():
-    return jsonify(latest_data)
-
-@app.route('/health')
-def health():
-    return Response(status=200)
-
-# Асинхронни задачи
 async def process_adc_data():
     while True:
         for channel in range(6):
-            value = process_channel(channel)
+            raw_value = read_adc(channel)
             if channel < 4:
+                value = calculate_voltage(raw_value)
                 latest_data["adc_channels"][f"channel_{channel}"] = {"voltage": value, "unit": "V"}
                 publish_sensor_data(channel, {"voltage": value}, 'voltage')
             else:
+                value = calculate_resistance(raw_value)
                 latest_data["adc_channels"][f"channel_{channel}"] = {"resistance": value, "unit": "Ω"}
                 publish_sensor_data(channel, {"resistance": value}, 'resistance')
-        await asyncio.sleep(1)  # Можете да настроите времето според нуждите
+        await asyncio.sleep(1)
 
 async def monitor_availability():
     publish_availability("online")
@@ -237,13 +191,10 @@ async def monitor_availability():
         await asyncio.sleep(60)  # Публикуване на наличност на всеки 60 секунди
         publish_availability("online")
 
-# Основна функция: Стартиране на задачите едновременно
 async def main():
-    # Стартиране на Flask приложението в отделен нишка
     threading.Thread(target=lambda: app.run(host='0.0.0.0', port=HTTP_PORT), daemon=True).start()
-    
-    # Стартиране на ADC обработка и мониторинг на наличност
     await asyncio.gather(
+        setup_discovery(),
         process_adc_data(),
         monitor_availability()
     )
