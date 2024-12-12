@@ -36,7 +36,7 @@ EMA_ALPHA = 0.1
 MQTT_BROKER = 'localhost'  # Променете, ако брокерът е на друга машина
 MQTT_PORT = 1883
 MQTT_USERNAME = 'adc'       # Вашето потребителско име
-MQTT_PASSWORD = 'adc'       # Вашата парола
+MQTT_PASSWORD = '1111111А'       # Вашата парола
 MQTT_DISCOVERY_PREFIX = 'homeassistant'
 
 # Данни за съхранение
