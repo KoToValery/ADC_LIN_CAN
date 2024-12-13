@@ -1,15 +1,4 @@
-# adc_app.py
-# Copyright 2004 - 2024 biCOMM Design Ltd
-#
-# AUTH: Kostadin Tosev
-# DATE: 2024
-#
-# Target: RPi5
-# Project CIS3
-# Hardware PCB V3.0
-# Tool: Python 3
-#
-# Version: V01.01.10.2024.CIS3 - optimized with separate ADC and LIN tasks
+
 
 import os
 import time
@@ -22,9 +11,8 @@ import serial
 import json
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
-from datetime import datetime
-import aiomqtt  # Updated import for aiomqtt
-import aiofiles  # For asynchronous file operations if needed
+import aiomqtt
+import aiofiles
 import signal
 
 # -------------------- Logging Configuration --------------------
@@ -87,6 +75,14 @@ PID_DICT = {
     PID_TEMPERATURE: 'Temperature',
     PID_HUMIDITY: 'Humidity'
 }
+
+# MQTT (Message Queuing Telemetry Transport) Configuration
+MQTT_BROKER = 'localhost'        # Адрес на MQTT брокера
+MQTT_PORT = 1883                  # Порт на MQTT брокера
+MQTT_USERNAME = 'mqtt'            # Потребителско име за MQTT
+MQTT_PASSWORD = 'mqtt_pass'       # Парола за MQTT
+MQTT_DISCOVERY_PREFIX = 'homeassistant'  # Префикс за откриване в Home Assistant
+MQTT_CLIENT_ID = "cis3_adc_mqtt_client"  # Уникален идентификатор на клиента
 
 # -------------------- Data Initialization --------------------
 # Initialize a dictionary to hold the latest sensor data
