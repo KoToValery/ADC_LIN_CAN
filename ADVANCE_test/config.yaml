@@ -1,5 +1,5 @@
 name: "ADC & LIN_advanced"
-version: "1.0.6.6"
+version: "1.0.6.7"
 slug: "adc_lin_advanced"
 description: "Add-on for visualizing ADC and LIN communication with automatic HA discovery"
 arch:
@@ -38,13 +38,13 @@ schema:
   moving_average_window_resistance: int
   low_pass_alpha: float
 environment:
-  MQTT_USER: "${mqtt_user}"
-  MQTT_PASS: "${mqtt_pass}"
-  EMA_ALPHA_VOLTAGE: "${ema_alpha_voltage}"
-  EMA_ALPHA_RESISTANCE: "${ema_alpha_resistance}"
-  MOVING_AVERAGE_WINDOW_VOLTAGE: "${moving_average_window_voltage}"
-  MOVING_AVERAGE_WINDOW_RESISTANCE: "${moving_average_window_resistance}"
-  LOW_PASS_ALPHA: "${low_pass_alpha}"
+  MQTT_USER: "${mqtt_user}"                        # String - keep quotes
+  MQTT_PASS: "${mqtt_pass}"                        # String - keep quotes
+  EMA_ALPHA_VOLTAGE: ${ema_alpha_voltage}           # Float - remove quotes
+  EMA_ALPHA_RESISTANCE: ${ema_alpha_resistance}     # Float - remove quotes
+  MOVING_AVERAGE_WINDOW_VOLTAGE: ${moving_average_window_voltage}       # Int - remove quotes
+  MOVING_AVERAGE_WINDOW_RESISTANCE: ${moving_average_window_resistance}   # Int - remove quotes
+  LOW_PASS_ALPHA: ${low_pass_alpha}                 # Float - remove quotes
 devices:
   - /dev/spidev1.1:/dev/spidev1.1
   - /dev/spidev1.0:/dev/spidev1.0
