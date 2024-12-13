@@ -52,12 +52,23 @@ EMA_ALPHA = 0.1
 MQTT_BROKER = 'localhost'  # Update if the broker is on another machine
 MQTT_PORT = 1883
 MQTT_USERNAME = 'mqtt'
-MQTT_PASSWORD = 'mqtt-pass'
+MQTT_PASSWORD = 'mqtt_pass'
 MQTT_DISCOVERY_PREFIX = 'homeassistant'
+
+# LIN configuration
+SYNC_BYTE = 0x55
+BREAK_DURATION = 0.00135  # 1.35 ms
+UART_PORT = '/dev/ttyAMA2'
+UART_BAUDRATE = 19200
+
+def enhanced_checksum(data):
+    """Calculate LIN checksum."""
+    return (~sum(data) & 0xFF)
 
 # Data storage
 latest_data = {
-    "adc_channels": {}
+    "adc_channels": {},
+    "lin_sensors": {}
 }
 
 # Quart application
@@ -68,6 +79,14 @@ spi = spidev.SpiDev()
 spi.open(SPI_BUS, SPI_DEVICE)
 spi.max_speed_hz = SPI_SPEED
 spi.mode = SPI_MODE
+
+# Initialize UART for LIN
+try:
+    import serial
+    uart = serial.Serial(UART_PORT, UART_BAUDRATE, timeout=1)
+except Exception as e:
+    logger.error(f"Failed to initialize LIN UART: {e}")
+    uart = None
 
 # MQTT callback functions
 def on_connect(client, userdata, flags, rc):
@@ -160,6 +179,22 @@ def setup_mqtt_discovery(channel, sensor_type):
     }
     mqtt_client.publish(base_topic, json.dumps(payload), retain=True)
 
+def setup_mqtt_discovery_lin(sensor):
+    """Publish LIN sensor Discovery messages for Home Assistant."""
+    base_topic = f"{MQTT_DISCOVERY_PREFIX}/sensor/lin_{sensor}/config"
+    payload = {
+        "name": f"LIN Sensor {sensor}",
+        "state_topic": f"cis3/lin/{sensor}",
+        "unique_id": f"cis3_lin_{sensor}",
+        "device": {
+            "identifiers": ["cis3_device"],
+            "name": "CIS3 Device",
+            "model": "CIS3 Model",
+            "manufacturer": "Your Company"
+        }
+    }
+    mqtt_client.publish(base_topic, json.dumps(payload), retain=True)
+
 def publish_sensor_data(channel, data, sensor_type):
     """Publish sensor data to MQTT."""
     if sensor_type == 'voltage':
@@ -169,6 +204,12 @@ def publish_sensor_data(channel, data, sensor_type):
     payload = json.dumps(data)
     mqtt_client.publish(topic, payload)
 
+def publish_lin_data(sensor, value):
+    """Publish LIN data to MQTT."""
+    topic = f"cis3/lin/{sensor}"
+    payload = json.dumps({"value": value})
+    mqtt_client.publish(topic, payload)
+
 def publish_availability(status):
     """Publish availability status to MQTT."""
     topic = "cis3/availability"
@@ -176,7 +217,7 @@ def publish_availability(status):
 
 @app.route('/data')
 async def data_route():
-    """HTTP route to get the latest ADC data."""
+    """HTTP route to get the latest ADC and LIN data."""
     return jsonify(latest_data)
 
 @app.websocket('/ws')
@@ -193,6 +234,8 @@ async def setup_discovery():
             setup_mqtt_discovery(ch, 'voltage')
         else:
             setup_mqtt_discovery(ch, 'resistance')
+    for sensor in ["temperature", "humidity"]:
+        setup_mqtt_discovery_lin(sensor)
 
 async def process_adc_data():
     while True:
@@ -208,6 +251,17 @@ async def process_adc_data():
                 publish_sensor_data(channel, {"resistance": value}, 'resistance')
         await asyncio.sleep(1)
 
+async def process_lin_data():
+    """Process LIN sensor data and publish it."""
+    while True:
+        if uart:
+            for sensor in ["temperature", "humidity"]:
+                # Simulate LIN data read
+                value = 25.0 if sensor == "temperature" else 60.0
+                latest_data["lin_sensors"][sensor] = value
+                publish_lin_data(sensor, value)
+        await asyncio.sleep(5)
+
 async def monitor_availability():
     publish_availability("online")
     while True:
@@ -221,6 +275,7 @@ async def main():
         quart_task,
         setup_discovery(),
         process_adc_data(),
+        process_lin_data(),
         monitor_availability()
     )
 
@@ -233,3 +288,5 @@ if __name__ == '__main__':
         mqtt_client.loop_stop()
         mqtt_client.disconnect()
         spi.close()
+        if uart:
+            uart.close()
