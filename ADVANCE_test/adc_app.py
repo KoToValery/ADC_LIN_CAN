@@ -69,14 +69,14 @@ RESISTANCE_REFERENCE = 10000     # Reference resistance in ohms
 
 # Moving Average Window Sizes (Configurable via environment variables)
 MOVING_AVERAGE_WINDOW_VOLTAGE = int(os.getenv("MOVING_AVERAGE_WINDOW_VOLTAGE", "10"))
-MOVING_AVERAGE_WINDOW_RESISTANCE = int(os.getenv("MOVING_AVERAGE_WINDOW_RESISTANCE", "10"))
+MOVING_AVERAGE_WINDOW_RESISTANCE = int(os.getenv("MOVING_AVERAGE_WINDOW_RESISTANCE", "30"))
 
 # EMA Configuration (Configurable via environment variables)
-EMA_ALPHA_VOLTAGE = float(os.getenv("EMA_ALPHA_VOLTAGE", "0.1"))
+EMA_ALPHA_VOLTAGE = float(os.getenv("EMA_ALPHA_VOLTAGE", "0.4"))
 EMA_ALPHA_RESISTANCE = float(os.getenv("EMA_ALPHA_RESISTANCE", "0.1"))
 
 # Low-Pass Filter Configuration (Configurable via environment variables)
-LOW_PASS_ALPHA = float(os.getenv("LOW_PASS_ALPHA", "0.1"))
+LOW_PASS_ALPHA = float(os.getenv("LOW_PASS_ALPHA", "0.5"))
 
 # UART Configuration for LIN Communication
 UART_PORT = '/dev/ttyAMA2'
