@@ -23,28 +23,13 @@ map:
   - dev
 options:
   mqtt_user: "mqtt"     
-  mqtt_pass: "mqtt_pass"
-  ema_alpha_voltage: 0.1
-  ema_alpha_resistance: 0.1
-  moving_average_window_voltage: 10
-  moving_average_window_resistance: 10
-  low_pass_alpha: 0.1
+  mqtt_pass: "mqtt_pass"       
 schema:
   mqtt_user: str
   mqtt_pass: str
-  ema_alpha_voltage: float
-  ema_alpha_resistance: float
-  moving_average_window_voltage: int
-  moving_average_window_resistance: int
-  low_pass_alpha: float
 environment:
-  MQTT_USER: "${mqtt_user}"                        # String - keep quotes
-  MQTT_PASS: "${mqtt_pass}"                        # String - keep quotes
-  EMA_ALPHA_VOLTAGE: ${ema_alpha_voltage}           # Float - remove quotes
-  EMA_ALPHA_RESISTANCE: ${ema_alpha_resistance}     # Float - remove quotes
-  MOVING_AVERAGE_WINDOW_VOLTAGE: ${moving_average_window_voltage}       # Int - remove quotes
-  MOVING_AVERAGE_WINDOW_RESISTANCE: ${moving_average_window_resistance}   # Int - remove quotes
-  LOW_PASS_ALPHA: ${low_pass_alpha}                 # Float - remove quotes
+  MQTT_USER: "${mqtt_user}"
+  MQTT_PASS: "${mqtt_pass}"
 devices:
   - /dev/spidev1.1:/dev/spidev1.1
   - /dev/spidev1.0:/dev/spidev1.0
