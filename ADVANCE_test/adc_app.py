@@ -28,7 +28,7 @@ import json
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
 from datetime import datetime
-import asyncio_mqtt as aiomqtt  # Optimization 1: Use async MQTT client
+import aiomqtt  # Updated import for aiomqtt
 import aiofiles  # For asynchronous file operations if needed
 import signal
 
@@ -196,15 +196,6 @@ MQTT_USERNAME = 'mqtt'      # Should match with dashboard.py
 MQTT_PASSWORD = 'mqtt_pass' # Should match with dashboard.py
 MQTT_DISCOVERY_PREFIX = 'homeassistant'
 MQTT_CLIENT_ID = "cis3_adc_mqtt_client"
-
-# -------------------- MQTT Async Client Setup --------------------
-# Optimization 1 & 3: Use asyncio-mqtt for asynchronous MQTT operations
-async_mqtt_client = aiomqtt.Client(
-    hostname=MQTT_BROKER,
-    port=MQTT_PORT,
-    username=MQTT_USERNAME,
-    password=MQTT_PASSWORD
-)
 
 # -------------------- Helper Functions --------------------
 def log_message(message, role="MASTER"):
@@ -388,9 +379,12 @@ def process_adc_data(channel):
         resistance = ((RESISTANCE_REFERENCE * (ADC_RESOLUTION - average)) / average) / 10
         return round(resistance, 2)
 
-async def publish_to_mqtt():
+async def publish_to_mqtt(client):
     """
     Optimization 3: Publishes the latest sensor data to MQTT state topics asynchronously.
+    
+    Args:
+        client (aiomqtt.Client): The MQTT client instance.
     """
     try:
         # ADC Channels
@@ -401,20 +395,20 @@ async def publish_to_mqtt():
                 # Voltage Measurement
                 state_topic = f"cis3/{channel}/voltage"
                 payload = adc_data["voltage"]
-                await async_mqtt_client.publish(state_topic, str(payload), qos=1)
+                await client.publish(state_topic, str(payload), qos=1)
                 logger.debug(f"Published {channel} Voltage: {payload} V to {state_topic}")
             else:
                 # Resistance Measurement
                 state_topic = f"cis3/{channel}/resistance"
                 payload = adc_data["resistance"]
-                await async_mqtt_client.publish(state_topic, str(payload), qos=1)
+                await client.publish(state_topic, str(payload), qos=1)
                 logger.debug(f"Published {channel} Resistance: {payload} Ω to {state_topic}")
 
         # Slave Sensors
         slave = latest_data["slave_sensors"]["slave_1"]
         for sensor, value in slave.items():
             state_topic = f"cis3/slave_1/{sensor.lower()}"
-            await async_mqtt_client.publish(state_topic, str(value), qos=1)
+            await client.publish(state_topic, str(value), qos=1)
             logger.debug(f"Published Slave_1 {sensor}: {value} to {state_topic}")
     except Exception as e:
         logger.error(f"Error publishing to MQTT: {e}")
@@ -505,7 +499,13 @@ async def process_adc_and_lin():
     Continuously reads sensor data, updates clients via WebSocket, and publishes to MQTT.
     """
     try:
-        async with async_mqtt_client as client:
+        async with aiomqtt.Client(
+            hostname=MQTT_BROKER,
+            port=MQTT_PORT,
+            username=MQTT_USERNAME,
+            password=MQTT_PASSWORD
+        ) as client:
+            # Publish online status
             await client.publish("cis3/status", "online", qos=1, retain=True)
             await publish_mqtt_discovery(client)  # Optimization 3: Publish discovery once
 
@@ -538,14 +538,42 @@ async def process_adc_and_lin():
                     logger.debug("Sent updated data to WebSocket clients.")  # Optimization 4: Efficient WebSocket handling
 
                 # Publish Latest Data to MQTT
-                await publish_to_mqtt()  # Optimization 3: Asynchronous MQTT publishing
+                await publish_to_mqtt(client)  # Optimization 3: Asynchronous MQTT publishing
 
                 await asyncio.sleep(2)  # Interval between each loop iteration
     except Exception as e:
         logger.error(f"Error in ADC and LIN processing loop: {e}")
     finally:
-        await async_mqtt_client.publish("cis3/status", "offline", qos=1, retain=True)
-        logger.info("Published offline status to MQTT.")
+        try:
+            # Publish offline status
+            async with aiomqtt.Client(
+                hostname=MQTT_BROKER,
+                port=MQTT_PORT,
+                username=MQTT_USERNAME,
+                password=MQTT_PASSWORD
+            ) as client_offline:
+                await client_offline.publish("cis3/status", "offline", qos=1, retain=True)
+                logger.info("Published offline status to MQTT.")
+        except Exception as e:
+            logger.error(f"Error publishing offline status: {e}")
+
+# -------------------- Graceful Shutdown --------------------
+async def shutdown(signal):
+    """
+    Gracefully shuts down the application on receiving termination signals.
+    
+    Args:
+        signal: The signal received.
+    """
+    logger.info(f"Received exit signal {signal.name}...")
+    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    spi.close()  # Close SPI connection
+    ser.close()  # Close UART connection
+    logger.info("ADC, LIN & MQTT Advanced Add-on has been shut down.")
+    asyncio.get_event_loop().stop()
 
 # -------------------- Application Entry Point --------------------
 async def main():
@@ -556,13 +584,13 @@ async def main():
     config = Config()
     config.bind = [f"0.0.0.0:{HTTP_PORT}"]  # Bind to all network interfaces on specified port
     logger.info(f"Starting Quart HTTP server on port {HTTP_PORT}")
-    
+
     # Create tasks for Quart server and ADC & LIN processing
     quart_task = asyncio.create_task(serve(app, config))
     logger.info("Quart HTTP server started.")
     adc_lin_task = asyncio.create_task(process_adc_and_lin())
     logger.info("ADC and LIN processing task started.")
-    
+
     # Handle graceful shutdown on signals
     for sig in (signal.SIGINT, signal.SIGTERM):
         asyncio.get_event_loop().add_signal_handler(sig, lambda sig=sig: asyncio.create_task(shutdown(sig)))
@@ -571,22 +599,6 @@ async def main():
         quart_task,
         adc_lin_task
     )
-
-async def shutdown(signal):
-    """
-    Gracefully shuts down the application on receiving termination signals.
-    
-    Args:
-        signal: The signal received.
-    """
-    logger.info(f"Received exit signal {signal.name}...")
-    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-    list(map(lambda task: task.cancel(), tasks))
-    await asyncio.gather(*tasks, return_exceptions=True)
-    spi.close()  # Close SPI connection
-    ser.close()  # Close UART connection
-    logger.info("ADC, LIN & MQTT Advanced Add-on has been shut down.")
-    asyncio.get_event_loop().stop()
 
 if __name__ == '__main__':
     try:
