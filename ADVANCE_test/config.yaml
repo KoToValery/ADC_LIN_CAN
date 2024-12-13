@@ -1,5 +1,5 @@
 name: "ADC & LIN_advanced"
-version: "1.0.5.4"
+version: "1.0.5.5"
 slug: "adc_lin_advanced"
 description: "Add-on for visualizing ADC and LIN communication with automatic HA discovery"
 arch:
@@ -22,8 +22,8 @@ map:
   - config
   - dev
 options:
-  mqtt_user: "adc"     
-  mqtt_pass: "adc"       
+  mqtt_user: "mqtt"     
+  mqtt_pass: "mqtt_pass"       
 schema:
   mqtt_user: str
   mqtt_pass: str
