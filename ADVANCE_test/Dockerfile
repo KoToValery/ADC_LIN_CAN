@@ -17,6 +17,7 @@ RUN pip3 install --no-cache-dir \
     pyserial \
     pyserial-asyncio \
     hypercorn 
+    paho-mqtt
 
 # Копиране на приложните файлове в контейнера
 COPY adc_app.py /
