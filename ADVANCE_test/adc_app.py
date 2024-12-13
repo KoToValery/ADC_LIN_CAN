@@ -16,6 +16,19 @@
 # 4. Test LIN communication - work
 # 5. - updated with MQTT integration
 
+# adc_app.py
+# Copyright 2004 - 2024  biCOMM Design Ltd
+#
+# AUTH: Kostadin Tosev
+# DATE: 2024
+#
+# Target: RPi5
+# Project CIS3
+# Hardware PCB V3.0
+# Tool: Python 3
+#
+# Version: V01.01.10.2024.CIS3 - updated with paho-mqtt integration
+
 import os
 import time
 import asyncio
@@ -28,7 +41,8 @@ import json
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
 from datetime import datetime
-import asyncio_mqtt
+import paho.mqtt.client as mqtt
+import threading
 
 # Configure logging
 logging.basicConfig(
@@ -36,7 +50,7 @@ logging.basicConfig(
     format='[%(asctime)s] [%(name)s] %(levelname)s: %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
-logger = logging.getLogger('ADC & LIN & MQTT')
+logger = logging.getLogger('ADC, LIN & MQTT')
 
 logger.info("ADC, LIN & MQTT Advanced Add-on started.")
 
@@ -162,6 +176,42 @@ MQTT_USERNAME = os.getenv("MQTT_USERNAME", "")
 MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "")
 MQTT_DISCOVERY_PREFIX = os.getenv("MQTT_DISCOVERY_PREFIX", "homeassistant")
 MQTT_CLIENT_ID = os.getenv("MQTT_CLIENT_ID", "cis3_adc_mqtt_client")
+
+# Initialize MQTT client
+mqtt_client = mqtt.Client(client_id=MQTT_CLIENT_ID, clean_session=True)
+
+if MQTT_USERNAME and MQTT_PASSWORD:
+    mqtt_client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
+
+def on_connect(client, userdata, flags, rc):
+    if rc == 0:
+        logger.info("Connected to MQTT Broker.")
+        client.publish("cis3/status", "online", retain=True)
+        publish_mqtt_discovery(client)
+    else:
+        logger.error(f"Failed to connect to MQTT Broker, return code {rc}")
+
+def on_disconnect(client, userdata, rc):
+    logger.warning("Disconnected from MQTT Broker.")
+    if rc != 0:
+        logger.warning("Unexpected disconnection. Attempting to reconnect.")
+        try:
+            client.reconnect()
+        except Exception as e:
+            logger.error(f"Reconnection failed: {e}")
+
+mqtt_client.on_connect = on_connect
+mqtt_client.on_disconnect = on_disconnect
+
+def mqtt_loop():
+    try:
+        mqtt_client.connect(MQTT_BROKER, MQTT_PORT, keepalive=60)
+        mqtt_client.loop_forever()
+    except Exception as e:
+        logger.error(f"MQTT loop error: {e}")
+
+mqtt_thread = threading.Thread(target=mqtt_loop, daemon=True)
+mqtt_thread.start()
 
 # Log helper
 def log_message(message, role="MASTER"):
@@ -302,7 +352,109 @@ def process_adc_data(channel):
         resistance = ((RESISTANCE_REFERENCE * (ADC_RESOLUTION - average)) / average) / 10
         return round(resistance, 2)
 
-async def process_adc_and_lin(mqtt_client):
+def publish_to_mqtt():
+    """
+    Publishes the latest data to MQTT state topics.
+    """
+    # ADC Channels
+    for i in range(6):
+        channel = f"channel_{i}"
+        adc_data = latest_data["adc_channels"][channel]
+        if i < 4:
+            # Voltage
+            state_topic = f"cis3/{channel}/voltage"
+            payload = adc_data["voltage"]
+            mqtt_client.publish(state_topic, str(payload))
+            logger.debug(f"Published {channel} Voltage: {payload} V to {state_topic}")
+        else:
+            # Resistance
+            state_topic = f"cis3/{channel}/resistance"
+            payload = adc_data["resistance"]
+            mqtt_client.publish(state_topic, str(payload))
+            logger.debug(f"Published {channel} Resistance: {payload} Ω to {state_topic}")
+
+    # Slave Sensors
+    slave = latest_data["slave_sensors"]["slave_1"]
+    for sensor, value in slave.items():
+        state_topic = f"cis3/slave_1/{sensor.lower()}"
+        mqtt_client.publish(state_topic, str(value))
+        logger.debug(f"Published Slave_1 {sensor}: {value} to {state_topic}")
+
+def publish_mqtt_discovery(client):
+    """
+    Publishes MQTT discovery messages for all sensors.
+    """
+    sensors = []
+
+    # ADC Channels
+    for i in range(6):
+        channel = f"channel_{i}"
+        if i < 4:
+            sensor_type = "voltage"
+            unit = "V"
+            state_topic = f"cis3/{channel}/voltage"
+            unique_id = f"cis3_{channel}_voltage"
+            name = f"CIS3 {channel.replace('_', ' ').title()} Voltage"
+            device_class = "voltage"
+            icon = "mdi:flash"
+            value_template = "{{ value }}"
+        else:
+            sensor_type = "resistance"
+            unit = "Ω"
+            state_topic = f"cis3/{channel}/resistance"
+            unique_id = f"cis3_{channel}_resistance"
+            name = f"CIS3 {channel.replace('_', ' ').title()} Resistance"
+            device_class = "current"
+            icon = "mdi:water-percent"
+            value_template = "{{ value }}"
+
+        sensor = {
+            "name": name,
+            "unique_id": unique_id,
+            "state_topic": state_topic,
+            "unit_of_measurement": unit,
+            "device_class": device_class,
+            "icon": icon,
+            "value_template": value_template,
+            "availability_topic": "cis3/status",
+            "payload_available": "online",
+            "payload_not_available": "offline",
+            "device": {
+                "identifiers": ["cis3_device"],
+                "name": "CIS3 Device",
+                "model": "CIS3 PCB V3.0",
+                "manufacturer": "biCOMM Design Ltd"
+            }
+        }
+        discovery_topic = f"{MQTT_DISCOVERY_PREFIX}/sensor/{sensor['unique_id']}/config"
+        client.publish(discovery_topic, json.dumps(sensor), retain=True)
+        logger.info(f"Published MQTT discovery for {sensor['name']} to {discovery_topic}")
+
+    # Slave Sensors
+    for pid, sensor_name in PID_DICT.items():
+        sensor = {
+            "name": f"CIS3 Slave 1 {sensor_name}",
+            "unique_id": f"cis3_slave_1_{sensor_name.lower()}",
+            "state_topic": f"cis3/slave_1/{sensor_name.lower()}",
+            "unit_of_measurement": "%" if sensor_name == "Humidity" else "°C",
+            "device_class": "humidity" if sensor_name == "Humidity" else "temperature",
+            "icon": "mdi:water-percent" if sensor_name == "Humidity" else "mdi:thermometer",
+            "value_template": "{{ value }}",
+            "availability_topic": "cis3/status",
+            "payload_available": "online",
+            "payload_not_available": "offline",
+            "device": {
+                "identifiers": ["cis3_device"],
+                "name": "CIS3 Device",
+                "model": "CIS3 PCB V3.0",
+                "manufacturer": "biCOMM Design Ltd"
+            }
+        }
+        discovery_topic = f"{MQTT_DISCOVERY_PREFIX}/sensor/{sensor['unique_id']}/config"
+        client.publish(discovery_topic, json.dumps(sensor), retain=True)
+        logger.info(f"Published MQTT discovery for {sensor['name']} to {discovery_topic}")
+
+async def process_adc_and_lin():
     """
     Main loop for LIN and ADC communication.
     """
@@ -321,8 +473,7 @@ async def process_adc_and_lin(mqtt_client):
         # Process LIN
         for pid in PID_DICT.keys():
             send_header(pid)
-            # Await asynchronously to avoid blocking the event loop
-            response = await asyncio.to_thread(read_response, 3, pid)
+            response = read_response(3, pid)
             if response:
                 process_response(response, pid)
             await asyncio.sleep(0.1)  # Short pause between requests
@@ -334,160 +485,25 @@ async def process_adc_and_lin(mqtt_client):
             logger.debug("Sent updated data to WebSocket clients.")
 
         # Publish data to MQTT
-        await publish_to_mqtt(mqtt_client)
+        publish_to_mqtt()
 
         await asyncio.sleep(2)  # Interval between loops
 
-async def publish_to_mqtt(mqtt_client):
-    """
-    Publishes the latest data to MQTT state topics.
-    """
-    # ADC Channels
-    for i in range(6):
-        channel = f"channel_{i}"
-        adc_data = latest_data["adc_channels"][channel]
-        if i < 4:
-            # Voltage
-            state_topic = f"cis3/{channel}/voltage"
-            payload = adc_data["voltage"]
-            await mqtt_client.publish(state_topic, str(payload))
-            logger.debug(f"Published {channel} Voltage: {payload} V to {state_topic}")
-        else:
-            # Resistance
-            state_topic = f"cis3/{channel}/resistance"
-            payload = adc_data["resistance"]
-            await mqtt_client.publish(state_topic, str(payload))
-            logger.debug(f"Published {channel} Resistance: {payload} Ω to {state_topic}")
-
-    # Slave Sensors
-    slave = latest_data["slave_sensors"]["slave_1"]
-    for sensor, value in slave.items():
-        state_topic = f"cis3/slave_1/{sensor.lower()}"
-        await mqtt_client.publish(state_topic, str(value))
-        logger.debug(f"Published Slave_1 {sensor}: {value} to {state_topic}")
-
-async def publish_mqtt_discovery(mqtt_client):
-    """
-    Publishes MQTT discovery messages for all sensors.
-    """
-    sensors = []
-
-    # ADC Channels
-    for i in range(6):
-        channel = f"channel_{i}"
-        if i < 4:
-            sensor_type = "voltage"
-            unit = "V"
-            state_topic = f"cis3/{channel}/voltage"
-            unique_id = f"cis3_{channel}_voltage"
-            name = f"CIS3 {channel.replace('_', ' ').title()} Voltage"
-            device_class = "voltage"
-            icon = "mdi:flash"
-            state_topic_payload = state_topic
-            value_template = "{{ value }}"
-        else:
-            sensor_type = "resistance"
-            unit = "Ω"
-            state_topic = f"cis3/{channel}/resistance"
-            unique_id = f"cis3_{channel}_resistance"
-            name = f"CIS3 {channel.replace('_', ' ').title()} Resistance"
-            device_class = "current"
-            icon = "mdi:water-percent"
-            state_topic_payload = state_topic
-            value_template = "{{ value }}"
-
-        sensor = {
-            "name": name,
-            "unique_id": unique_id,
-            "state_topic": state_topic_payload,
-            "unit_of_measurement": unit,
-            "device_class": device_class,
-            "icon": icon,
-            "value_template": value_template
-        }
-        sensors.append(sensor)
-
-    # Slave Sensors
-    for sensor_key, sensor_name in PID_DICT.items():
-        sensor = {
-            "name": f"CIS3 Slave 1 {sensor_name}",
-            "unique_id": f"cis3_slave_1_{sensor_name.lower()}",
-            "state_topic": f"cis3/slave_1/{sensor_name.lower()}",
-            "unit_of_measurement": "%" if sensor_name == "Humidity" else "°C",
-            "device_class": "humidity" if sensor_name == "Humidity" else "temperature",
-            "icon": "mdi:water-percent" if sensor_name == "Humidity" else "mdi:thermometer",
-            "value_template": "{{ value }}"
-        }
-        sensors.append(sensor)
-
-    # Publish discovery messages
-    for sensor in sensors:
-        discovery_topic = f"{MQTT_DISCOVERY_PREFIX}/sensor/{sensor['unique_id']}/config"
-        payload = json.dumps({
-            "name": sensor["name"],
-            "unique_id": sensor["unique_id"],
-            "state_topic": sensor["state_topic"],
-            "unit_of_measurement": sensor["unit_of_measurement"],
-            "device_class": sensor["device_class"],
-            "icon": sensor["icon"],
-            "value_template": sensor["value_template"],
-            "availability_topic": "cis3/status",
-            "payload_available": "online",
-            "payload_not_available": "offline",
-            "device": {
-                "identifiers": ["cis3_device"],
-                "name": "CIS3 Device",
-                "model": "CIS3 PCB V3.0",
-                "manufacturer": "biCOMM Design Ltd"
-            }
-        })
-        await mqtt_client.publish(discovery_topic, payload, retain=True)
-        logger.info(f"Published MQTT discovery for {sensor['name']} to {discovery_topic}")
-
-async def mqtt_handler(mqtt_client):
-    """
-    Handles MQTT connection and publishes discovery and state messages.
-    """
-    async with mqtt_client.unfiltered_messages() as messages:
-        await publish_mqtt_discovery(mqtt_client)
-        await mqtt_client.publish("cis3/status", "online", retain=True)
-        logger.info("MQTT discovery messages published and status set to online.")
-
 async def main():
     """
-    Starts the Quart HTTP server, ADC & LIN processing, and MQTT client.
+    Starts the Quart HTTP server and ADC & LIN processing.
     """
-    mqtt_config = {
-        "hostname": MQTT_BROKER,
-        "port": MQTT_PORT,
-        "username": MQTT_USERNAME if MQTT_USERNAME else None,
-        "password": MQTT_PASSWORD if MQTT_PASSWORD else None,
-        "client_id": MQTT_CLIENT_ID
-    }
-
-    try:
-        async with asyncio_mqtt.Client(**mqtt_config) as mqtt_client:
-            mqtt_task = asyncio.create_task(mqtt_handler(mqtt_client))
-            logger.info("MQTT client connected and handler started.")
-
-            config = Config()
-            config.bind = [f"0.0.0.0:{HTTP_PORT}"]
-            logger.info(f"Starting Quart HTTP server on port {HTTP_PORT}")
-            quart_task = asyncio.create_task(serve(app, config))
-            logger.info("Quart HTTP server started.")
-
-            adc_lin_task = asyncio.create_task(process_adc_and_lin(mqtt_client))
-            logger.info("ADC and LIN processing task started.")
-
-            await asyncio.gather(
-                quart_task,
-                adc_lin_task,
-                mqtt_task
-            )
-    except asyncio_mqtt.MqttError as e:
-        logger.error(f"MQTT Error: {e}")
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}")
+    config = Config()
+    config.bind = [f"0.0.0.0:{HTTP_PORT}"]
+    logger.info(f"Starting Quart HTTP server on port {HTTP_PORT}")
+    quart_task = asyncio.create_task(serve(app, config))
+    logger.info("Quart HTTP server started.")
+    adc_lin_task = asyncio.create_task(process_adc_and_lin())
+    logger.info("ADC and LIN processing task started.")
+    await asyncio.gather(
+        quart_task,
+        adc_lin_task
+    )
 
 if __name__ == '__main__':
     try:
@@ -499,4 +515,6 @@ if __name__ == '__main__':
     finally:
         spi.close()
         ser.close()
+        mqtt_client.publish("cis3/status", "offline", retain=True)
+        mqtt_client.disconnect()
         logger.info("ADC, LIN & MQTT Advanced Add-on has been shut down.")
