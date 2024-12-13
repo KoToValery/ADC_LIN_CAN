@@ -15,35 +15,29 @@
 # 3. Test ADC communication - work
 # 4. Test LIN communication - work
 # 5. - updated with MQTT integration
-#- Updated with detailed comments, optimized logging,
-#          Low-Pass Filtering, separate EMA for voltage and resistance,
-#          and configurable parameters via config.yaml
+
 
 import os
 import time
-import asyncio
-import spidev
-from collections import deque
-from quart import Quart, jsonify, send_from_directory, websocket
-import logging
-import serial
 import json
-from hypercorn.asyncio import serve
-from hypercorn.config import Config
-from datetime import datetime
-import paho.mqtt.client as mqtt
+import asyncio
 import threading
+import spidev
+from quart import Quart, jsonify, send_from_directory, websocket
+from collections import deque
+import logging
+import paho.mqtt.client as mqtt
 
 # --------------------------- Logging Configuration --------------------------- #
 
-# Configure logging to capture only errors and important system messages.
+# Конфигуриране на логиране за записване на важни съобщения и грешки
 logging.basicConfig(
-    level=logging.INFO,  # Set to INFO to capture important messages and errors
+    level=logging.INFO,
     format='[%(asctime)s] [%(name)s] %(levelname)s: %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
     handlers=[
-        logging.FileHandler("adc_app.log"),  # Log to file
-        logging.StreamHandler()              # Log to console
+        logging.FileHandler("adc_app.log"),
+        logging.StreamHandler()
     ]
 )
 logger = logging.getLogger('ADC, LIN & MQTT')
@@ -68,15 +62,25 @@ VOLTAGE_MULTIPLIER = 3.31        # Multiplier based on voltage divider or amplif
 RESISTANCE_REFERENCE = 10000     # Reference resistance in ohms
 
 # Moving Average Window Sizes (Configurable via environment variables)
-MOVING_AVERAGE_WINDOW_VOLTAGE = int(os.getenv("MOVING_AVERAGE_WINDOW_VOLTAGE", "10"))
-MOVING_AVERAGE_WINDOW_RESISTANCE = int(os.getenv("MOVING_AVERAGE_WINDOW_RESISTANCE", "30"))
+try:
+    MOVING_AVERAGE_WINDOW_VOLTAGE = int(os.getenv("MOVING_AVERAGE_WINDOW_VOLTAGE", "10"))
+    MOVING_AVERAGE_WINDOW_RESISTANCE = int(os.getenv("MOVING_AVERAGE_WINDOW_RESISTANCE", "10"))
+except ValueError as e:
+    logger.error(f"Invalid moving average window size: {e}")
+    MOVING_AVERAGE_WINDOW_VOLTAGE = 10
+    MOVING_AVERAGE_WINDOW_RESISTANCE = 10
 
 # EMA Configuration (Configurable via environment variables)
-EMA_ALPHA_VOLTAGE = float(os.getenv("EMA_ALPHA_VOLTAGE", "0.4"))
-EMA_ALPHA_RESISTANCE = float(os.getenv("EMA_ALPHA_RESISTANCE", "0.1"))
+try:
+    EMA_ALPHA_VOLTAGE = float(os.getenv("EMA_ALPHA_VOLTAGE", "0.1"))
+    EMA_ALPHA_RESISTANCE = float(os.getenv("EMA_ALPHA_RESISTANCE", "0.1"))
+except ValueError as e:
+    logger.error(f"Invalid EMA alpha value: {e}")
+    EMA_ALPHA_VOLTAGE = 0.1
+    EMA_ALPHA_RESISTANCE = 0.1
 
-# Low-Pass Filter Configuration (Configurable via environment variables)
-LOW_PASS_ALPHA = float(os.getenv("LOW_PASS_ALPHA", "0.5"))
+# Low-Pass Filter Configuration (Премахнат)
+# LOW_PASS_ALPHA = float(os.getenv("LOW_PASS_ALPHA", "0.1"))  # Премахнато
 
 # UART Configuration for LIN Communication
 UART_PORT = '/dev/ttyAMA2'
@@ -114,14 +118,6 @@ try:
     logger.info("SPI interface for ADC initialized.")
 except Exception as e:
     logger.error(f"SPI initialization error: {e}")
-
-# Initialize UART for LIN communication
-try:
-    ser = serial.Serial(UART_PORT, UART_BAUDRATE, timeout=1)
-    logger.info(f"UART interface initialized on {UART_PORT} at {UART_BAUDRATE} baud.")
-except Exception as e:
-    logger.error(f"UART initialization error: {e}")
-    exit(1)
 
 # Initialize MQTT client with paho-mqtt
 mqtt_client = mqtt.Client(client_id=MQTT_CLIENT_ID, clean_session=True)
@@ -170,7 +166,7 @@ latest_data = {
 @app.route('/data')
 async def data_route():
     """
-    Route to provide the latest sensor data in JSON format.
+    Route за предоставяне на последните данни на сензорите във формат JSON.
     """
     return jsonify(latest_data)
 
@@ -195,204 +191,206 @@ async def index():
 @app.websocket('/ws')
 async def ws_route():
     """
-    WebSocket route for real-time data updates.
+    WebSocket route за реално време обновяване на данните.
     """
-    logger.info("New WebSocket connection established.")
+    logger.info("Нова WebSocket връзка установена.")
     clients.add(websocket._get_current_object())
     try:
         while True:
-            await websocket.receive()  # Keep the connection open
+            await websocket.receive()  # Поддържане на връзката
     except asyncio.CancelledError:
         pass
     except Exception as e:
-        logger.error(f"WebSocket error: {e}")
+        logger.error(f"WebSocket грешка: {e}")
     finally:
         clients.remove(websocket._get_current_object())
-        logger.info("WebSocket connection closed.")
+        logger.info("WebSocket връзката е затворена.")
 
 # --------------------------- Define Filtering Functions --------------------------- #
 
-# Initialize deques for Moving Average
+# Инициализиране на буфери за Moving Average
 buffers_ma_voltage = {f"channel_{i}": deque(maxlen=MOVING_AVERAGE_WINDOW_VOLTAGE) for i in range(4)}
 buffers_ma_resistance = {f"channel_{i}": deque(maxlen=MOVING_AVERAGE_WINDOW_RESISTANCE) for i in range(4,6)}
 
-# Initialize EMA values
-ema_voltage = {f"channel_{i}": None for i in range(4)}
-ema_resistance = {f"channel_{i}": None for i in range(4,6)}
+# Инициализиране на EMA стойности
+values_ema_voltage = {f"channel_{i}": None for i in range(4)}
+values_ema_resistance = {f"channel_{i}": None for i in range(4,6)}
 
-# Initialize Low-Pass Filter values
-low_pass_voltage = {f"channel_{i}": None for i in range(4)}
-low_pass_resistance = {f"channel_{i}": None for i in range(4,6)}
+def moving_average(value, channel, is_voltage=True):
+    """
+    Изчислява движещата се средна стойност за даден канал.
+    """
+    if is_voltage:
+        buffers_ma_voltage[channel].append(value)
+        if len(buffers_ma_voltage[channel]) == MOVING_AVERAGE_WINDOW_VOLTAGE:
+            return sum(buffers_ma_voltage[channel]) / MOVING_AVERAGE_WINDOW_VOLTAGE
+        return sum(buffers_ma_voltage[channel]) / len(buffers_ma_voltage[channel])
+    else:
+        buffers_ma_resistance[channel].append(value)
+        if len(buffers_ma_resistance[channel]) == MOVING_AVERAGE_WINDOW_RESISTANCE:
+            return sum(buffers_ma_resistance[channel]) / MOVING_AVERAGE_WINDOW_RESISTANCE
+        return sum(buffers_ma_resistance[channel]) / len(buffers_ma_resistance[channel])
 
-def moving_average(value, buffer):
+def exponential_moving_average(value, channel, is_voltage=True):
     """
-    Calculate the moving average for a given buffer.
+    Изчислява експоненциалната движеща се средна стойност (EMA) за даден канал.
     """
-    buffer.append(value)
-    return sum(buffer) / len(buffer)
-
-def exponential_moving_average(value, previous_ema, alpha):
-    """
-    Calculate the Exponential Moving Average (EMA).
-    """
-    if previous_ema is None:
-        return value
-    return alpha * value + (1 - alpha) * previous_ema
-
-def low_pass_filter(value, previous_filtered, alpha):
-    """
-    Apply a Low-Pass Filter to the value.
-    """
-    if previous_filtered is None:
-        return value
-    return alpha * value + (1 - alpha) * previous_filtered
+    if is_voltage:
+        if values_ema_voltage[channel] is None:
+            values_ema_voltage[channel] = value
+        else:
+            values_ema_voltage[channel] = EMA_ALPHA_VOLTAGE * value + (1 - EMA_ALPHA_VOLTAGE) * values_ema_voltage[channel]
+        return values_ema_voltage[channel]
+    else:
+        if values_ema_resistance[channel] is None:
+            values_ema_resistance[channel] = value
+        else:
+            values_ema_resistance[channel] = EMA_ALPHA_RESISTANCE * value + (1 - EMA_ALPHA_RESISTANCE) * values_ema_resistance[channel]
+        return values_ema_resistance[channel]
 
 # --------------------------- Define Helper Functions --------------------------- #
 
 def enhanced_checksum(data):
     """
-    Calculates the checksum by summing all bytes, taking the lowest byte,
-    and returning its inverse.
+    Изчислява чексумата чрез сумиране на всички байтове, вземане на най-ниския байт и връщане на неговия инверс.
     """
     checksum = sum(data) & 0xFF
     return (~checksum) & 0xFF
 
 def send_break():
     """
-    Sends a BREAK signal for LIN communication.
+    Изпраща BREAK сигнал за LIN комуникация.
     """
     ser.break_condition = True
     time.sleep(BREAK_DURATION)
     ser.break_condition = False
-    time.sleep(0.0001)  # Short pause after break
+    time.sleep(0.0001)  # Кратка пауза след break
 
 def send_header(pid):
     """
-    Sends SYNC + PID header to the LIN slave and clears the UART buffer.
+    Изпраща SYNC + PID заглавие към LIN slave и изчиства UART буфера.
     """
-    ser.reset_input_buffer()  # Clear UART buffer before sending
+    ser.reset_input_buffer()  # Изчистване на UART буфера преди изпращане
     send_break()
     ser.write(bytes([SYNC_BYTE, pid]))
-    logger.info(f"Sent Header: SYNC=0x{SYNC_BYTE:02X}, PID=0x{pid:02X} ({PID_DICT.get(pid, 'Unknown')})")
-    time.sleep(0.1)  # Short pause for slave processing
+    logger.info(f"Изпратен Header: SYNC=0x{SYNC_BYTE:02X}, PID=0x{pid:02X} ({PID_DICT.get(pid, 'Unknown')})")
+    time.sleep(0.05)  # Кратка пауза за обработка от slave
 
 def read_response(expected_data_length, pid):
     """
-    Reads the response from the LIN slave, looking for SYNC + PID,
-    and then extracting the data.
+    Чете отговора от LIN slave, търсейки SYNC + PID и след това извлича данните.
     """
-    expected_length = expected_data_length  # 3 bytes: 2 data + 1 checksum
+    expected_length = expected_data_length  # 3 байта: 2 данни + 1 чексума
     start_time = time.time()
     buffer = bytearray()
     sync_pid = bytes([SYNC_BYTE, pid])
 
-    while (time.time() - start_time) < 2.0:  # 2-second timeout
+    while (time.time() - start_time) < 2.0:  # 2-секунден timeout
         if ser.in_waiting > 0:
             data = ser.read(ser.in_waiting)
             buffer.extend(data)
-            logger.debug(f"Received bytes: {data.hex()}")  # Debug log for received bytes
+            logger.debug(f"Получени байтове: {data.hex()}")  # Debug лог за получени байтове
 
-            # Search for SYNC + PID in the buffer
+            # Търсене на SYNC + PID в буфера
             index = buffer.find(sync_pid)
             if index != -1:
-                logger.info(f"Found SYNC + PID at index {index}: {buffer[index:index+2].hex()}")
-                # Remove everything before and including SYNC + PID
+                logger.info(f"Намерено SYNC + PID на индекс {index}: {buffer[index:index+2].hex()}")
+                # Премахване на всичко преди и включително SYNC + PID
                 buffer = buffer[index + 2:]
-                logger.debug(f"Filtered Buffer after SYNC + PID: {buffer.hex()}")
+                logger.debug(f"Филтриран буфер след SYNC + PID: {buffer.hex()}")
 
-                # Check if enough bytes are available for data and checksum
+                # Проверка дали има достатъчно байтове за данни и чексума
                 if len(buffer) >= expected_length:
                     response = buffer[:expected_length]
-                    logger.info(f"Filtered Response: {response.hex()}")
+                    logger.info(f"Филтриран отговор: {response.hex()}")
                     return response
                 else:
-                    # Wait for remaining data
+                    # Изчакване за останалите данни
                     while len(buffer) < expected_length and (time.time() - start_time) < 2.0:
                         if ser.in_waiting > 0:
                             more_data = ser.read(ser.in_waiting)
                             buffer.extend(more_data)
-                            logger.debug(f"Received bytes while waiting: {more_data.hex()}")
+                            logger.debug(f"Получени байтове при изчакване: {more_data.hex()}")
                         else:
                             time.sleep(0.01)
                     if len(buffer) >= expected_length:
                         response = buffer[:expected_length]
-                        logger.info(f"Filtered Response after waiting: {response.hex()}")
+                        logger.info(f"Филтриран отговор след изчакване: {response.hex()}")
                         return response
         else:
             time.sleep(0.01)
 
-    logger.error("No valid response received within timeout.")
+    logger.error("Не е получен валиден отговор в рамките на timeout-а.")
     return None
 
 def process_response(response, pid):
     """
-    Processes the received response, checks the checksum,
-    and updates the data.
+    Обработва получения отговор, проверява чексумата и обновява данните.
     """
     if response and len(response) == 3:
         data = response[:2]
         received_checksum = response[2]
         calculated_checksum = enhanced_checksum([pid] + list(data))
-        logger.info(f"Received Checksum: 0x{received_checksum:02X}, Calculated Checksum: 0x{calculated_checksum:02X}")
+        logger.info(f"Получена чексума: 0x{received_checksum:02X}, Изчислена чексума: 0x{calculated_checksum:02X}")
 
         if received_checksum == calculated_checksum:
             value = int.from_bytes(data, 'little') / 100.0
             sensor = PID_DICT.get(pid, 'Unknown')
             if sensor == 'Temperature':
-                logger.info(f"Temperature: {value:.2f}°C")
+                logger.info(f"Температура: {value:.2f}°C")
                 latest_data["slave_sensors"]["slave_1"]["Temperature"] = value
             elif sensor == 'Humidity':
-                logger.info(f"Humidity: {value:.2f}%")
+                logger.info(f"Влажност: {value:.2f}%")
                 latest_data["slave_sensors"]["slave_1"]["Humidity"] = value
             else:
                 logger.warning(f"Unknown PID {pid}: Value={value}")
         else:
-            logger.error("Checksum mismatch.")
+            logger.error("Несъответствие на чексумата.")
     else:
-        logger.error("Invalid response length.")
+        logger.error("Невалидна дължина на отговора.")
 
 # --------------------------- Define MQTT Callback Functions --------------------------- #
 
 def on_connect(client, userdata, flags, rc):
     """
-    Callback function for when the MQTT client connects to the broker.
+    Callback функция при свързване към MQTT брокера.
     """
     if rc == 0:
-        logger.info("Connected to MQTT Broker.")
+        logger.info("Свързан към MQTT Broker.")
         client.publish("cis3/status", "online", retain=True)
         publish_mqtt_discovery(client)
     else:
-        logger.error(f"Failed to connect to MQTT Broker, return code {rc}")
+        logger.error(f"Неуспешно свързване към MQTT Broker, код {rc}")
 
 def on_disconnect(client, userdata, rc):
     """
-    Callback function for when the MQTT client disconnects from the broker.
+    Callback функция при разединяване от MQTT брокера.
     """
-    logger.error(f"Disconnected from MQTT Broker with return code {rc}")
+    logger.error(f"Разединено от MQTT Broker с код {rc}")
     if rc != 0:
-        logger.warning("Unexpected disconnection. Attempting to reconnect.")
+        logger.warning("Неочаквано разединяване. Опит за повторно свързване.")
         try:
             client.reconnect()
         except Exception as e:
-            logger.error(f"Reconnection failed: {e}")
+            logger.error(f"Неуспешен опит за повторно свързване: {e}")
 
 # --------------------------- MQTT Initialization and Loop --------------------------- #
 
-# Register MQTT callback functions
+# Регистриране на MQTT callback функции
 mqtt_client.on_connect = on_connect
 mqtt_client.on_disconnect = on_disconnect
 
 def mqtt_loop():
     """
-    Runs the MQTT client loop in a separate thread.
+    Стартира MQTT клиентния цикъл в отделен тред.
     """
     try:
         mqtt_client.connect(MQTT_BROKER, MQTT_PORT, keepalive=60)
         mqtt_client.loop_forever()
     except Exception as e:
-        logger.error(f"MQTT loop error: {e}")
+        logger.error(f"MQTT цикъл грешка: {e}")
 
-# Start MQTT loop in a separate daemon thread
+# Стартиране на MQTT цикъла в отделен тред
 mqtt_thread = threading.Thread(target=mqtt_loop, daemon=True)
 mqtt_thread.start()
 
@@ -400,16 +398,16 @@ mqtt_thread.start()
 
 def publish_mqtt_discovery(client):
     """
-    Publishes MQTT discovery messages for all sensors to enable auto-discovery in Home Assistant.
+    Публикува MQTT съобщения за откриване на всички сензори за автоматично откриване в Home Assistant.
     """
-    # List to hold all sensor configurations
+    # Списък за всички конфигурации на сензори
     sensors = []
 
-    # ADC Channels Discovery
+    # Откриване на ADC канали
     for i in range(6):
         channel = f"channel_{i}"
         if i < 4:
-            # Voltage Sensors
+            # Сензори за напрежение
             sensor_type = "voltage"
             unit = "V"
             state_topic = f"cis3/{channel}/voltage"
@@ -419,17 +417,17 @@ def publish_mqtt_discovery(client):
             icon = "mdi:flash"
             value_template = "{{ value }}"
         else:
-            # Resistance Sensors
+            # Сензори за съпротивление
             sensor_type = "resistance"
             unit = "Ω"
             state_topic = f"cis3/{channel}/resistance"
             unique_id = f"cis3_{channel}_resistance"
             name = f"CIS3 Channel {i} Resistance"
-            device_class = "resistance"  # Ensure Home Assistant recognizes this
+            device_class = "resistance"  # Уверете се, че Home Assistant разпознава това
             icon = "mdi:water-percent"
             value_template = "{{ value }}"
 
-        # Sensor Configuration Dictionary
+        # Конфигурация на сензора
         sensor = {
             "name": name,
             "unique_id": unique_id,
@@ -450,7 +448,7 @@ def publish_mqtt_discovery(client):
         }
         sensors.append(sensor)
 
-    # Slave Sensors Discovery
+    # Откриване на Slave сензори
     for pid, sensor_name in PID_DICT.items():
         sensor = {
             "name": f"CIS3 Slave 1 {sensor_name}",
@@ -472,17 +470,17 @@ def publish_mqtt_discovery(client):
         }
         sensors.append(sensor)
 
-    # Publish discovery messages for each sensor
+    # Публикуване на откривателни съобщения за всеки сензор
     for sensor in sensors:
         discovery_topic = f"{MQTT_DISCOVERY_PREFIX}/sensor/{sensor['unique_id']}/config"
         client.publish(discovery_topic, json.dumps(sensor), retain=True)
-        logger.info(f"Published MQTT discovery for {sensor['name']} to {discovery_topic}")
+        logger.info(f"Публикувано MQTT откриване за {sensor['name']} на {discovery_topic}")
 
 # --------------------------- ADC Reading and Processing --------------------------- #
 
 def read_adc(channel):
     """
-    Reads raw ADC value from the specified channel.
+    Чете сурова ADC стойност от посочения канал.
     """
     try:
         adc_response = spi.xfer2([1, (8 + channel) << 4, 0])
@@ -490,131 +488,121 @@ def read_adc(channel):
         logger.debug(f"ADC Channel {channel} Raw Value: {adc_value}")
         return adc_value
     except Exception as e:
-        logger.error(f"Error reading ADC channel {channel}: {e}")
+        logger.error(f"Грешка при четене на ADC канал {channel}: {e}")
         return 0
+
+def calculate_voltage(adc_value):
+    """
+    Изчислява напрежението въз основа на ADC стойността.
+    """
+    if adc_value < 10:  # Noise threshold
+        return 0.0
+    return round((adc_value / ADC_RESOLUTION) * VREF * VOLTAGE_MULTIPLIER, 2)
+
+def calculate_resistance(adc_value):
+    """
+    Изчислява съпротивлението въз основа на ADC стойността.
+    """
+    if adc_value <= 10 or adc_value >= (ADC_RESOLUTION - 10):
+        return 0.0
+    resistance = ((RESISTANCE_REFERENCE * (ADC_RESOLUTION - adc_value)) / adc_value) / 10
+    return round(resistance, 2)
+
+def process_channel(channel):
+    """
+    Обработва даден канал, прилага филтри и изчислява стойността.
+    """
+    raw_value = read_adc(channel)
+    is_voltage = channel < 4
+    filtered_ma = moving_average(raw_value, channel, is_voltage=is_voltage)
+    filtered_ema = exponential_moving_average(filtered_ma, channel, is_voltage=is_voltage)
+    if is_voltage:
+        return calculate_voltage(filtered_ema)
+    return calculate_resistance(filtered_ema)
 
 async def process_adc_and_lin():
     """
-    Main loop for LIN and ADC communication.
+    Главен цикъл за комуникация с LIN и ADC.
     """
-    global ema_voltage, ema_resistance, low_pass_voltage, low_pass_resistance
-
     while True:
-        # Process ADC Channels
-        for i in range(6):
-            channel = f"channel_{i}"
-            raw_adc = read_adc(i)
-
-            if i < 4:
-                # Voltage Channels
-                # Apply Moving Average
-                avg_voltage = moving_average(raw_adc, buffers_ma_voltage[channel])
-
-                # Apply Low-Pass Filter
-                low_pass_voltage[channel] = low_pass_filter(avg_voltage, low_pass_voltage[channel], LOW_PASS_ALPHA)
-
-                # Apply Exponential Moving Average
-                ema_voltage[channel] = exponential_moving_average(low_pass_voltage[channel], ema_voltage[channel], EMA_ALPHA_VOLTAGE)
-
-                # Calculate Voltage
-                voltage = (ema_voltage[channel] / ADC_RESOLUTION) * VREF * VOLTAGE_MULTIPLIER
-                voltage = round(voltage, 2)
-
-                # Update Latest Data
-                latest_data["adc_channels"][channel]["voltage"] = voltage
-
+        # Обработка на ADC канали
+        for channel in range(6):
+            value = process_channel(channel)
+            if channel < 4:
+                latest_data["adc_channels"][f"channel_{channel}"] = {"voltage": value, "unit": "V"}
             else:
-                # Resistance Channels
-                # Apply Moving Average
-                avg_resistance = moving_average(raw_adc, buffers_ma_resistance[channel])
+                latest_data["adc_channels"][f"channel_{channel}"] = {"resistance": value, "unit": "Ω"}
 
-                # Apply Low-Pass Filter
-                low_pass_resistance[channel] = low_pass_filter(avg_resistance, low_pass_resistance[channel], LOW_PASS_ALPHA)
-
-                # Apply Exponential Moving Average
-                ema_resistance[channel] = exponential_moving_average(low_pass_resistance[channel], ema_resistance[channel], EMA_ALPHA_RESISTANCE)
-
-                # Prevent division by zero
-                if ema_resistance[channel] == 0:
-                    resistance = 0.0
-                else:
-                    # Calculate Resistance based on voltage divider formula
-                    resistance = ((RESISTANCE_REFERENCE * (ADC_RESOLUTION - ema_resistance[channel])) / ema_resistance[channel]) / 10
-                    resistance = round(resistance, 2)
-
-                # Update Latest Data
-                latest_data["adc_channels"][channel]["resistance"] = resistance
-
-        # Process LIN Communication for each PID
+        # Обработка на LIN комуникация за всеки PID
         for pid in PID_DICT.keys():
             send_header(pid)
             response = read_response(3, pid)
             if response:
                 process_response(response, pid)
-            await asyncio.sleep(0.1)  # Short pause between PID requests
+            await asyncio.sleep(0.05)  # Кратка пауза между заявките за PID
 
-        # Send data to connected WebSocket clients
+        # Изпращане на данните към свързаните WebSocket клиенти
         if clients:
             data_to_send = json.dumps(latest_data)
             await asyncio.gather(*(client.send(data_to_send) for client in clients))
-            logger.info("Sent updated data to WebSocket clients.")
+            logger.info("Изпратени обновени данни към WebSocket клиенти.")
 
-        # Publish data to MQTT
+        # Публикуване на данните към MQTT
         publish_to_mqtt()
 
-        # Wait for the next cycle
-        await asyncio.sleep(2)  # Update interval in seconds
+        # Изчакване за следващия цикъл
+        await asyncio.sleep(0.5)  # Намаляване на интервала за обновяване
 
 # --------------------------- Define MQTT Publishing Function --------------------------- #
 
 def publish_to_mqtt():
     """
-    Publishes the latest data to MQTT state topics.
+    Публикува последните данни към MQTT state теми.
     """
-    # Publish ADC Voltage and Resistance
+    # Публикуване на напрежение и съпротивление от ADC
     for i in range(6):
         channel = f"channel_{i}"
         adc_data = latest_data["adc_channels"][channel]
         if i < 4:
-            # Voltage Topic
+            # Тематика за напрежение
             state_topic = f"cis3/{channel}/voltage"
             payload = adc_data["voltage"]
             mqtt_client.publish(state_topic, str(payload))
-            logger.info(f"Published {channel} Voltage: {payload} V to {state_topic}")
+            logger.info(f"Публикувано {channel} Напрежение: {payload} V към {state_topic}")
         else:
-            # Resistance Topic
+            # Тематика за съпротивление
             state_topic = f"cis3/{channel}/resistance"
             payload = adc_data["resistance"]
             mqtt_client.publish(state_topic, str(payload))
-            logger.info(f"Published {channel} Resistance: {payload} Ω to {state_topic}")
+            logger.info(f"Публикувано {channel} Съпротивление: {payload} Ω към {state_topic}")
 
-    # Publish Slave Sensors (Temperature and Humidity)
+    # Публикуване на Slave сензори (Температура и Влажност)
     slave = latest_data["slave_sensors"]["slave_1"]
     for sensor, value in slave.items():
         if value is not None:
             state_topic = f"cis3/slave_1/{sensor.lower()}"
             mqtt_client.publish(state_topic, str(value))
-            logger.info(f"Published Slave_1 {sensor}: {value} to {state_topic}")
+            logger.info(f"Публикувано Slave_1 {sensor}: {value} към {state_topic}")
         else:
-            logger.error(f"Slave_1 {sensor} value is None, skipping MQTT publish.")
+            logger.error(f"Slave_1 {sensor} стойност е None, пропускане на MQTT публикуване.")
 
 # --------------------------- Define Quart HTTP Server --------------------------- #
 
 async def start_quart():
     """
-    Starts the Quart HTTP server.
+    Стартира HTTP сървъра Quart.
     """
     config = Config()
     config.bind = [f"0.0.0.0:{HTTP_PORT}"]
-    logger.info(f"Starting Quart HTTP server on port {HTTP_PORT}")
+    logger.info(f"Стартиране на Quart HTTP сървър на порт {HTTP_PORT}")
     await serve(app, config)
-    logger.info("Quart HTTP server started.")
+    logger.info("Quart HTTP сървър стартиран.")
 
 # --------------------------- Main Function --------------------------- #
 
 async def main():
     """
-    Main function to start the Quart server and process ADC & LIN data.
+    Главна функция за стартиране на Quart сървъра и обработка на ADC & LIN данни.
     """
     await asyncio.gather(
         start_quart(),
@@ -627,14 +615,13 @@ if __name__ == '__main__':
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Shutting down ADC, LIN & MQTT Advanced Add-on...")
+        logger.info("Спиране на ADC, LIN & MQTT Advanced Add-on...")
     except Exception as e:
-        logger.error(f"Unexpected error: {e}")
+        logger.error(f"Неочаквана грешка: {e}")
     finally:
-        # Close SPI and UART interfaces
+        # Затваряне на SPI интерфейса
         spi.close()
-        ser.close()
-        # Publish offline status and disconnect MQTT
+        # Публикуване на статус offline и разединяване на MQTT
         mqtt_client.publish("cis3/status", "offline", retain=True)
         mqtt_client.disconnect()
-        logger.info("ADC, LIN & MQTT Advanced Add-on has been shut down.")
+        logger.info("ADC, LIN & MQTT Advanced Add-on е спрян.")
