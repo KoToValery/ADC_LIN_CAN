@@ -65,8 +65,8 @@ RESISTANCE_REFERENCE = 10000  # Reference resistor value for resistance measurem
 MOVING_AVERAGE_WINDOW = 10  # Window size for moving average
 
 # Update Intervals (in seconds)
-ADC_UPDATE_INTERVAL = 0.1  # Update ADC every 0.1 seconds
-LIN_UPDATE_INTERVAL = 2.0  # Update LIN every 2 seconds (modifiable)
+ADC_UPDATE_INTERVAL = 0.01  # Update ADC every 0.01 seconds
+LIN_UPDATE_INTERVAL = 1.0  # Update LIN every 2 seconds (modifiable)
 
 # Supervisor Configuration (Environment Variables)
 SUPERVISOR_WS_URL = os.getenv("SUPERVISOR_WS_URL", "ws://supervisor/core/websocket")
