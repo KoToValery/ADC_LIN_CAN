@@ -19,6 +19,7 @@
 #          Low-Pass Filtering, separate EMA for voltage and resistance,
 #          and configurable parameters via config.yaml
 
+
 import os
 import time
 import asyncio
@@ -72,11 +73,11 @@ MOVING_AVERAGE_WINDOW_VOLTAGE = int(os.getenv("MOVING_AVERAGE_WINDOW_VOLTAGE", "
 MOVING_AVERAGE_WINDOW_RESISTANCE = int(os.getenv("MOVING_AVERAGE_WINDOW_RESISTANCE", "10"))
 
 # EMA Configuration (Configurable via environment variables)
-EMA_ALPHA_VOLTAGE = float(os.getenv("EMA_alpha_voltage", "0.1"))
-EMA_ALPHA_RESISTANCE = float(os.getenv("EMA_alpha_resistance", "0.1"))
+EMA_ALPHA_VOLTAGE = float(os.getenv("EMA_ALPHA_VOLTAGE", "0.1"))
+EMA_ALPHA_RESISTANCE = float(os.getenv("EMA_ALPHA_RESISTANCE", "0.1"))
 
 # Low-Pass Filter Configuration (Configurable via environment variables)
-LOW_PASS_ALPHA = float(os.getenv("LOW_PASS_alpha", "0.1"))
+LOW_PASS_ALPHA = float(os.getenv("LOW_PASS_ALPHA", "0.1"))
 
 # UART Configuration for LIN Communication
 UART_PORT = '/dev/ttyAMA2'
@@ -85,8 +86,8 @@ UART_BAUDRATE = 9600
 # MQTT Configuration (Credentials and Broker Details)
 MQTT_BROKER = 'localhost'         # MQTT broker address
 MQTT_PORT = 1883                  # MQTT broker port
-MQTT_USERNAME = 'mqtt'            # MQTT username
-MQTT_PASSWORD = 'mqtt_pass'       # MQTT password
+MQTT_USERNAME = os.getenv("MQTT_USER", "mqtt")    # Fetch from environment
+MQTT_PASSWORD = os.getenv("MQTT_PASS", "mqtt_pass") # Fetch from environment
 MQTT_DISCOVERY_PREFIX = 'homeassistant'  # MQTT discovery prefix
 MQTT_CLIENT_ID = "cis3_adc_mqtt_client"  # MQTT client ID
 
@@ -213,16 +214,16 @@ async def ws_route():
 # --------------------------- Define Filtering Functions --------------------------- #
 
 # Initialize deques for Moving Average
-buffers_ma_voltage = deque(maxlen=MOVING_AVERAGE_WINDOW_VOLTAGE)
-buffers_ma_resistance = deque(maxlen=MOVING_AVERAGE_WINDOW_RESISTANCE)
+buffers_ma_voltage = {f"channel_{i}": deque(maxlen=MOVING_AVERAGE_WINDOW_VOLTAGE) for i in range(4)}
+buffers_ma_resistance = {f"channel_{i}": deque(maxlen=MOVING_AVERAGE_WINDOW_RESISTANCE) for i in range(4,6)}
 
 # Initialize EMA values
-ema_voltage = None
-ema_resistance = None
+ema_voltage = {f"channel_{i}": None for i in range(4)}
+ema_resistance = {f"channel_{i}": None for i in range(4,6)}
 
 # Initialize Low-Pass Filter values
-low_pass_voltage = None
-low_pass_resistance = None
+low_pass_voltage = {f"channel_{i}": None for i in range(4)}
+low_pass_resistance = {f"channel_{i}": None for i in range(4,6)}
 
 def moving_average(value, buffer):
     """
@@ -480,6 +481,19 @@ def publish_mqtt_discovery(client):
 
 # --------------------------- ADC Reading and Processing --------------------------- #
 
+def read_adc(channel):
+    """
+    Reads raw ADC value from the specified channel.
+    """
+    try:
+        adc_response = spi.xfer2([1, (8 + channel) << 4, 0])
+        adc_value = ((adc_response[1] & 3) << 8) + adc_response[2]
+        logger.debug(f"ADC Channel {channel} Raw Value: {adc_value}")
+        return adc_value
+    except Exception as e:
+        logger.error(f"Error reading ADC channel {channel}: {e}")
+        return 0
+
 async def process_adc_and_lin():
     """
     Main loop for LIN and ADC communication.
@@ -495,16 +509,16 @@ async def process_adc_and_lin():
             if i < 4:
                 # Voltage Channels
                 # Apply Moving Average
-                avg_voltage = moving_average(raw_adc, buffers_ma_voltage)
+                avg_voltage = moving_average(raw_adc, buffers_ma_voltage[channel])
 
                 # Apply Low-Pass Filter
-                low_pass_voltage = low_pass_filter(avg_voltage, low_pass_voltage, LOW_PASS_ALPHA)
+                low_pass_voltage[channel] = low_pass_filter(avg_voltage, low_pass_voltage[channel], LOW_PASS_ALPHA)
 
                 # Apply Exponential Moving Average
-                ema_voltage = exponential_moving_average(low_pass_voltage, ema_voltage, EMA_ALPHA_VOLTAGE)
+                ema_voltage[channel] = exponential_moving_average(low_pass_voltage[channel], ema_voltage[channel], EMA_ALPHA_VOLTAGE)
 
                 # Calculate Voltage
-                voltage = (ema_voltage / ADC_RESOLUTION) * VREF * VOLTAGE_MULTIPLIER
+                voltage = (ema_voltage[channel] / ADC_RESOLUTION) * VREF * VOLTAGE_MULTIPLIER
                 voltage = round(voltage, 2)
 
                 # Update Latest Data
@@ -513,20 +527,20 @@ async def process_adc_and_lin():
             else:
                 # Resistance Channels
                 # Apply Moving Average
-                avg_resistance = moving_average(raw_adc, buffers_ma_resistance)
+                avg_resistance = moving_average(raw_adc, buffers_ma_resistance[channel])
 
                 # Apply Low-Pass Filter
-                low_pass_resistance = low_pass_filter(avg_resistance, low_pass_resistance, LOW_PASS_ALPHA)
+                low_pass_resistance[channel] = low_pass_filter(avg_resistance, low_pass_resistance[channel], LOW_PASS_ALPHA)
 
                 # Apply Exponential Moving Average
-                ema_resistance = exponential_moving_average(low_pass_resistance, ema_resistance, EMA_ALPHA_RESISTANCE)
+                ema_resistance[channel] = exponential_moving_average(low_pass_resistance[channel], ema_resistance[channel], EMA_ALPHA_RESISTANCE)
 
                 # Prevent division by zero
-                if ema_resistance == 0:
+                if ema_resistance[channel] == 0:
                     resistance = 0.0
                 else:
                     # Calculate Resistance based on voltage divider formula
-                    resistance = ((RESISTANCE_REFERENCE * (ADC_RESOLUTION - ema_resistance)) / ema_resistance) / 10
+                    resistance = ((RESISTANCE_REFERENCE * (ADC_RESOLUTION - ema_resistance[channel])) / ema_resistance[channel]) / 10
                     resistance = round(resistance, 2)
 
                 # Update Latest Data
