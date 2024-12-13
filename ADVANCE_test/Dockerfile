@@ -11,14 +11,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install Python dependencies
 RUN pip3 install --no-cache-dir \
     quart \
-    websockets \
-    websocket-client \
+    hypercorn \
     spidev \
     pyserial \
-    pyserial-asyncio \
-    aiofiles \
-    hypercorn    
-RUN pip3 install --no-cache-dir aiomqtt
+    aiomqtt \
+    aiofiles
 
 # Copy application files into the container
 COPY adc_app.py /
