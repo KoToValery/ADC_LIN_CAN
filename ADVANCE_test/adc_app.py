@@ -19,7 +19,6 @@
 #          Low-Pass Filtering, separate EMA for voltage and resistance,
 #          and configurable parameters via config.yaml
 
-
 import os
 import time
 import asyncio
