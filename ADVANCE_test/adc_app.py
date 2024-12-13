@@ -15,19 +15,7 @@
 # 3. Test ADC communication - work
 # 4. Test LIN communication - work
 # 5. - updated with MQTT integration
-
-# adc_app.py
-# Copyright 2004 - 2024
-#
-# AUTH: Kostadin Tosev
-# DATE: 2024
-#
-# Target: RPi5
-# Project CIS3
-# Hardware PCB V3.0
-# Tool: Python 3
-#
-# Version: V01.01.10.2024.CIS3 - Updated with detailed comments, optimized logging,
+#- Updated with detailed comments, optimized logging,
 #          Low-Pass Filtering, separate EMA for voltage and resistance,
 #          and configurable parameters via config.yaml
 
