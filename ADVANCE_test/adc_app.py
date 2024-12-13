@@ -14,6 +14,7 @@
 # 3. Test ADC communication - work
 # 4. Test LIN communication - work
 # 5. MQTT auto discovery of sensors- work
+
 import os
 import time
 import json
@@ -21,13 +22,16 @@ import asyncio
 import threading
 import spidev
 import paho.mqtt.client as mqtt
-from quart import Quart, jsonify, websocket
+from quart import Quart, jsonify, websocket, send_from_directory
 from collections import deque
 import logging
+import serial
+from hypercorn.asyncio import serve
+from hypercorn.config import Config
 
-# Configure logging (errors only)
+# Configure logging (debug level for detailed logs)
 logging.basicConfig(
-    level=logging.ERROR,  # Only log errors
+    level=logging.DEBUG,  # Set to DEBUG for detailed logs
     format='%(asctime)s %(levelname)s %(message)s',
     handlers=[
         logging.FileHandler("mqtt_error.log"),
@@ -76,14 +80,19 @@ app = Quart(__name__)
 
 # Initialize SPI
 spi = spidev.SpiDev()
-spi.open(SPI_BUS, SPI_DEVICE)
-spi.max_speed_hz = SPI_SPEED
-spi.mode = SPI_MODE
+try:
+    spi.open(SPI_BUS, SPI_DEVICE)
+    spi.max_speed_hz = SPI_SPEED
+    spi.mode = SPI_MODE
+    logger.info("SPI interface initialized.")
+except Exception as e:
+    logger.error(f"SPI initialization error: {e}")
+    exit(1)
 
 # Initialize UART for LIN
 try:
-    import serial
     uart = serial.Serial(UART_PORT, UART_BAUDRATE, timeout=1)
+    logger.info(f"UART interface initialized on {UART_PORT} at {UART_BAUDRATE} baud.")
 except Exception as e:
     logger.error(f"Failed to initialize LIN UART: {e}")
     uart = None
@@ -91,7 +100,7 @@ except Exception as e:
 # MQTT callback functions
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
-        logger.error("MQTT connected successfully to the broker")
+        logger.info("MQTT connected successfully to the broker")
         client.connected_flag = True
         # Publish availability status
         publish_availability("online")
@@ -125,7 +134,9 @@ except Exception as e:
     logger.error(f"Failed to connect to MQTT broker: {e}")
     exit(1)
 
-mqtt_client.loop_start()
+# Run MQTT loop in a separate thread to prevent blocking
+mqtt_thread = threading.Thread(target=mqtt_client.loop_forever)
+mqtt_thread.start()
 
 # Filtering
 buffers_ma = {i: deque(maxlen=MOVING_AVERAGE_WINDOW) for i in range(6)}
@@ -147,9 +158,13 @@ def apply_ema(value, channel):
 def read_adc(channel):
     if 0 <= channel <= 7:
         cmd = [1, (8 + channel) << 4, 0]
-        adc = spi.xfer2(cmd)
-        value = ((adc[1] & 3) << 8) + adc[2]
-        return value
+        try:
+            adc = spi.xfer2(cmd)
+            value = ((adc[1] & 3) << 8) + adc[2]
+            return value
+        except Exception as e:
+            logger.error(f"Error reading ADC channel {channel}: {e}")
+            return 0
     return 0
 
 def calculate_voltage(adc_value):
@@ -220,6 +235,16 @@ async def data_route():
     """HTTP route to get the latest ADC and LIN data."""
     return jsonify(latest_data)
 
+@app.route('/health')
+async def health():
+    """Health check route."""
+    return '', 200
+
+@app.route('/')
+async def index():
+    """Root route for Ingress."""
+    return jsonify({"status": "ADC & LIN Add-on is running."}), 200
+
 @app.websocket('/ws')
 async def ws_route():
     """WebSocket route for real-time updates."""
@@ -248,7 +273,8 @@ async def process_adc_data():
             else:
                 value = calculate_resistance(raw_value)
                 latest_data["adc_channels"][f"channel_{channel}"] = {"resistance": value, "unit": "Ω"}
-                publish_sensor_data(channel, {"resistance": value}, 'resistance')
+                publish_sensor_data(channel, {"resistance": value}, 'resistance'
+                )
         await asyncio.sleep(1)
 
 async def process_lin_data():
@@ -270,7 +296,10 @@ async def monitor_availability():
 
 async def main():
     """Start the Quart application and background tasks."""
-    quart_task = asyncio.create_task(app.run_task(host='0.0.0.0', port=HTTP_PORT))
+    config = Config()
+    config.bind = [f"0.0.0.0:{HTTP_PORT}"]
+    quart_task = asyncio.create_task(serve(app, config))
+    logger.info(f"Quart HTTP server started on port {HTTP_PORT}")
     await asyncio.gather(
         quart_task,
         setup_discovery(),
@@ -283,10 +312,13 @@ if __name__ == '__main__':
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        pass
+        logger.info("Shutting down ADC & LIN Add-on...")
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
     finally:
         mqtt_client.loop_stop()
         mqtt_client.disconnect()
         spi.close()
         if uart:
             uart.close()
+        logger.info("ADC & LIN Add-on has been shut down.")
