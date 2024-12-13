@@ -16,6 +16,7 @@ RUN pip3 install --no-cache-dir \
     spidev \
     pyserial \
     pyserial-asyncio \
+    aiofiles \
     hypercorn    
 RUN pip3 install --no-cache-dir asyncio_mqtt
 
