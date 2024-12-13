@@ -16,7 +16,7 @@ RUN pip3 install --no-cache-dir \
     spidev \
     pyserial \
     pyserial-asyncio \
-    hypercorn 
+    hypercorn \
     paho-mqtt
 
 # Копиране на приложните файлове в контейнера
