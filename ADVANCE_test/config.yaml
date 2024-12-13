@@ -1,5 +1,5 @@
 name: "ADC & LIN_advanced"
-version: "1.0.6.4"
+version: "1.0.6.5"
 slug: "adc_lin_advanced"
 description: "Add-on for visualizing ADC and LIN communication with automatic HA discovery"
 arch:
@@ -21,15 +21,74 @@ map:
   - spi
   - config
   - dev
+
+# Configuration options that can be set via the HAOS add-on UI
 options:
-  mqtt_user: "mqtt"     
-  mqtt_pass: "mqtt_pass"       
+  mqtt_user: "mqtt"
+  mqtt_pass: "mqtt_pass"
+  EMA_alpha_voltage: 0.1          # Smoothing factor for voltage EMA
+  EMA_alpha_resistance: 0.1       # Smoothing factor for resistance EMA
+  MOVING_AVERAGE_WINDOW_VOLTAGE: 10        # Number of samples for voltage moving average
+  MOVING_AVERAGE_WINDOW_RESISTANCE: 10     # Number of samples for resistance moving average
+  LOW_PASS_alpha: 0.1             # Smoothing factor for low-pass filter
+
+# Schema defines the type of each configurable option
 schema:
-  mqtt_user: str
-  mqtt_pass: str
+  mqtt_user:
+    type: string
+    title: "MQTT Username"
+    default: "mqtt"
+  mqtt_pass:
+    type: string
+    title: "MQTT Password"
+    default: "mqtt_pass"
+  EMA_alpha_voltage:
+    type: number
+    title: "EMA Alpha for Voltage"
+    default: 0.1
+    minimum: 0.0
+    maximum: 1.0
+    step: 0.01
+  EMA_alpha_resistance:
+    type: number
+    title: "EMA Alpha for Resistance"
+    default: 0.1
+    minimum: 0.0
+    maximum: 1.0
+    step: 0.01
+  MOVING_AVERAGE_WINDOW_VOLTAGE:
+    type: integer
+    title: "Moving Average Window Size for Voltage"
+    default: 10
+    minimum: 1
+    maximum: 100
+    step: 1
+  MOVING_AVERAGE_WINDOW_RESISTANCE:
+    type: integer
+    title: "Moving Average Window Size for Resistance"
+    default: 10
+    minimum: 1
+    maximum: 100
+    step: 1
+  LOW_PASS_alpha:
+    type: number
+    title: "Low-Pass Filter Alpha"
+    default: 0.1
+    minimum: 0.0
+    maximum: 1.0
+    step: 0.01
+
+# Environment variables mapped from the options
 environment:
   MQTT_USER: "${mqtt_user}"
   MQTT_PASS: "${mqtt_pass}"
+  EMA_alpha_voltage: "${EMA_alpha_voltage}"
+  EMA_alpha_resistance: "${EMA_alpha_resistance}"
+  MOVING_AVERAGE_WINDOW_VOLTAGE: "${MOVING_AVERAGE_WINDOW_VOLTAGE}"
+  MOVING_AVERAGE_WINDOW_RESISTANCE: "${MOVING_AVERAGE_WINDOW_RESISTANCE}"
+  LOW_PASS_alpha: "${LOW_PASS_alpha}"
+
+# Device mappings for SPI and UART interfaces
 devices:
   - /dev/spidev1.1:/dev/spidev1.1
   - /dev/spidev1.0:/dev/spidev1.0
