@@ -9,12 +9,12 @@
 # Hardware PCB V3.0
 # Tool: Python 3
 #
-# Version: V01.01.09.2024.CIS3 - temporary 01
+# Version: V01.01.09.2024.CIS3 - optimized
 # 1. TestSPI,ADC - work. Measurement Voltage 0-10 V, resistive 0-1000 ohm
 # 2. Test Power PI5V/4.5A - work
 # 3. Test ADC communication - work
 # 4. Test LIN communication - work
-# 5. - updated with MQTT integration
+# 5. - updated with MQTT integration and optimizations
 
 import os
 import time
@@ -28,22 +28,25 @@ import json
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
 from datetime import datetime
-import paho.mqtt.client as mqtt
-import threading
+import asyncio_mqtt as aiomqtt  # Optimization 1: Use async MQTT client
+import aiofiles  # For asynchronous file operations if needed
+import signal
 
 # -------------------- Logging Configuration --------------------
+from logging.handlers import RotatingFileHandler
+
 logging.basicConfig(
-    level=logging.DEBUG,  # Set logging level to DEBUG for detailed output
-    format='[%(asctime)s] [%(name)s] %(levelname)s: %(message)s',  # Log message format
-    datefmt='%Y-%m-%d %H:%M:%S',  # Date format in logs
+    level=logging.INFO,  # Optimization 6: Set appropriate logging level
+    format='[%(asctime)s] [%(name)s] %(levelname)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
     handlers=[
-        logging.FileHandler("adc_app.log"),  # Log to file
-        logging.StreamHandler()  # Log to console
+        RotatingFileHandler("adc_app.log", maxBytes=5*1024*1024, backupCount=5),  # Optimization 6: Log rotation
+        logging.StreamHandler()
     ]
 )
-logger = logging.getLogger('ADC, LIN & MQTT')  # Create a logger for the application
+logger = logging.getLogger('ADC, LIN & MQTT')
 
-logger.info("ADC, LIN & MQTT Advanced Add-on started.")  # Log startup message
+logger.info("ADC, LIN & MQTT Advanced Add-on started.")
 
 # -------------------- Configuration Settings --------------------
 # HTTP Server Configuration
@@ -194,52 +197,14 @@ MQTT_PASSWORD = 'mqtt_pass' # Should match with dashboard.py
 MQTT_DISCOVERY_PREFIX = 'homeassistant'
 MQTT_CLIENT_ID = "cis3_adc_mqtt_client"
 
-# Initialize MQTT client
-mqtt_client = mqtt.Client(client_id=MQTT_CLIENT_ID, clean_session=True)
-
-# Set MQTT credentials
-mqtt_client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
-
-def on_connect(client, userdata, flags, rc):
-    """
-    Callback when the MQTT client connects to the broker.
-    """
-    if rc == 0:
-        logger.info("Connected to MQTT Broker.")
-        client.publish("cis3/status", "online", retain=True)  # Publish online status
-        publish_mqtt_discovery(client)  # Publish MQTT discovery messages
-    else:
-        logger.error(f"Failed to connect to MQTT Broker, return code {rc}")
-
-def on_disconnect(client, userdata, rc):
-    """
-    Callback when the MQTT client disconnects from the broker.
-    """
-    logger.warning(f"Disconnected from MQTT Broker with return code {rc}")
-    if rc != 0:
-        logger.warning("Unexpected disconnection. Attempting to reconnect.")
-        try:
-            client.reconnect()
-        except Exception as e:
-            logger.error(f"Reconnection failed: {e}")
-
-# Register MQTT callback functions
-mqtt_client.on_connect = on_connect
-mqtt_client.on_disconnect = on_disconnect
-
-def mqtt_loop():
-    """
-    Runs the MQTT client loop to handle network traffic, reconnections, etc.
-    """
-    try:
-        mqtt_client.connect(MQTT_BROKER, MQTT_PORT, keepalive=60)
-        mqtt_client.loop_forever()
-    except Exception as e:
-        logger.error(f"MQTT loop error: {e}")
-
-# Start MQTT loop in a separate daemon thread
-mqtt_thread = threading.Thread(target=mqtt_loop, daemon=True)
-mqtt_thread.start()
+# -------------------- MQTT Async Client Setup --------------------
+# Optimization 1 & 3: Use asyncio-mqtt for asynchronous MQTT operations
+async_mqtt_client = aiomqtt.Client(
+    hostname=MQTT_BROKER,
+    port=MQTT_PORT,
+    username=MQTT_USERNAME,
+    password=MQTT_PASSWORD
+)
 
 # -------------------- Helper Functions --------------------
 def log_message(message, role="MASTER"):
@@ -287,9 +252,9 @@ def send_header(pid):
     log_message(f"Sent Header: SYNC=0x{SYNC_BYTE:02X}, PID=0x{pid:02X} ({PID_DICT.get(pid, 'Unknown')})")
     time.sleep(0.1)  # Short pause for slave processing
 
-def read_response(expected_data_length, pid):
+async def read_response_async(expected_data_length, pid):
     """
-    Reads the response from the slave device, looking for SYNC + PID and then extracting the data.
+    Reads the response from the slave device asynchronously, looking for SYNC + PID and then extracting the data.
     
     Args:
         expected_data_length (int): Number of bytes expected after SYNC + PID.
@@ -330,13 +295,13 @@ def read_response(expected_data_length, pid):
                             buffer.extend(more_data)
                             log_message(f"Received bytes while waiting: {more_data.hex()}", role="MASTER")
                         else:
-                            time.sleep(0.01)  # Small delay before checking again
+                            await asyncio.sleep(0.01)  # Optimization 1: Use asyncio.sleep()
                     if len(buffer) >= expected_length:
                         response = buffer[:expected_length]
                         log_message(f"Filtered Response after waiting: {response.hex()}", role="MASTER")
                         return response
         else:
-            time.sleep(0.01)  # Small delay if no data is waiting
+            await asyncio.sleep(0.01)  # Optimization 1: Use asyncio.sleep()
 
     log_message("No valid response received within timeout.", role="MASTER")
     return None
@@ -423,179 +388,214 @@ def process_adc_data(channel):
         resistance = ((RESISTANCE_REFERENCE * (ADC_RESOLUTION - average)) / average) / 10
         return round(resistance, 2)
 
-def publish_to_mqtt():
+async def publish_to_mqtt():
     """
-    Publishes the latest sensor data to MQTT state topics.
+    Optimization 3: Publishes the latest sensor data to MQTT state topics asynchronously.
     """
-    # Publish ADC Channel Data
-    for i in range(6):
-        channel = f"channel_{i}"
-        adc_data = latest_data["adc_channels"][channel]
-        if i < 4:
-            # Voltage Measurement
-            state_topic = f"cis3/{channel}/voltage"
-            payload = adc_data["voltage"]
-            mqtt_client.publish(state_topic, str(payload))
-            logger.debug(f"Published {channel} Voltage: {payload} V to {state_topic}")
-        else:
-            # Resistance Measurement
-            state_topic = f"cis3/{channel}/resistance"
-            payload = adc_data["resistance"]
-            mqtt_client.publish(state_topic, str(payload))
-            logger.debug(f"Published {channel} Resistance: {payload} Ω to {state_topic}")
+    try:
+        # ADC Channels
+        for i in range(6):
+            channel = f"channel_{i}"
+            adc_data = latest_data["adc_channels"][channel]
+            if i < 4:
+                # Voltage Measurement
+                state_topic = f"cis3/{channel}/voltage"
+                payload = adc_data["voltage"]
+                await async_mqtt_client.publish(state_topic, str(payload), qos=1)
+                logger.debug(f"Published {channel} Voltage: {payload} V to {state_topic}")
+            else:
+                # Resistance Measurement
+                state_topic = f"cis3/{channel}/resistance"
+                payload = adc_data["resistance"]
+                await async_mqtt_client.publish(state_topic, str(payload), qos=1)
+                logger.debug(f"Published {channel} Resistance: {payload} Ω to {state_topic}")
 
-    # Publish Slave Sensor Data
-    slave = latest_data["slave_sensors"]["slave_1"]
-    for sensor, value in slave.items():
-        state_topic = f"cis3/slave_1/{sensor.lower()}"
-        mqtt_client.publish(state_topic, str(value))
-        logger.debug(f"Published Slave_1 {sensor}: {value} to {state_topic}")
+        # Slave Sensors
+        slave = latest_data["slave_sensors"]["slave_1"]
+        for sensor, value in slave.items():
+            state_topic = f"cis3/slave_1/{sensor.lower()}"
+            await async_mqtt_client.publish(state_topic, str(value), qos=1)
+            logger.debug(f"Published Slave_1 {sensor}: {value} to {state_topic}")
+    except Exception as e:
+        logger.error(f"Error publishing to MQTT: {e}")
 
-def publish_mqtt_discovery(client):
+async def publish_mqtt_discovery(client):
     """
     Publishes MQTT discovery messages for all sensors to enable automatic discovery in Home Assistant.
     
     Args:
-        client (mqtt.Client): The MQTT client instance.
+        client (aiomqtt.Client): The MQTT client instance.
     """
-    sensors = []
+    try:
+        # Publish MQTT Discovery for ADC Channels
+        for i in range(6):
+            channel = f"channel_{i}"
+            if i < 4:
+                # Voltage Sensor Configuration
+                sensor_type = "voltage"
+                unit = "V"
+                state_topic = f"cis3/{channel}/voltage"
+                unique_id = f"cis3_{channel}_voltage"
+                name = f"CIS3 Channel {i} Voltage"
+                device_class = "voltage"
+                icon = "mdi:flash"
+                value_template = "{{ value }}"
+            else:
+                # Resistance Sensor Configuration
+                sensor_type = "resistance"
+                unit = "Ω"
+                state_topic = f"cis3/{channel}/resistance"
+                unique_id = f"cis3_{channel}_resistance"
+                name = f"CIS3 Channel {i} Resistance"
+                device_class = "resistance"  # Device class for resistance
+                icon = "mdi:water-percent"
+                value_template = "{{ value }}"
 
-    # Publish MQTT Discovery for ADC Channels
-    for i in range(6):
-        channel = f"channel_{i}"
-        if i < 4:
-            # Voltage Sensor Configuration
-            sensor_type = "voltage"
-            unit = "V"
-            state_topic = f"cis3/{channel}/voltage"
-            unique_id = f"cis3_{channel}_voltage"
-            name = f"CIS3 Channel {i} Voltage"
-            device_class = "voltage"
-            icon = "mdi:flash"
-            value_template = "{{ value }}"
-        else:
-            # Resistance Sensor Configuration
-            sensor_type = "resistance"
-            unit = "Ω"
-            state_topic = f"cis3/{channel}/resistance"
-            unique_id = f"cis3_{channel}_resistance"
-            name = f"CIS3 Channel {i} Resistance"
-            device_class = "resistance"  # Device class for resistance
-            icon = "mdi:water-percent"
-            value_template = "{{ value }}"
-
-        sensor = {
-            "name": name,
-            "unique_id": unique_id,
-            "state_topic": state_topic,
-            "unit_of_measurement": unit,
-            "device_class": device_class,
-            "icon": icon,
-            "value_template": value_template,
-            "availability_topic": "cis3/status",
-            "payload_available": "online",
-            "payload_not_available": "offline",
-            "device": {
-                "identifiers": ["cis3_device"],
-                "name": "CIS3 Device",
-                "model": "CIS3 PCB V3.0",
-                "manufacturer": "biCOMM Design Ltd"
+            sensor = {
+                "name": name,
+                "unique_id": unique_id,
+                "state_topic": state_topic,
+                "unit_of_measurement": unit,
+                "device_class": device_class,
+                "icon": icon,
+                "value_template": value_template,
+                "availability_topic": "cis3/status",
+                "payload_available": "online",
+                "payload_not_available": "offline",
+                "device": {
+                    "identifiers": ["cis3_device"],
+                    "name": "CIS3 Device",
+                    "model": "CIS3 PCB V3.0",
+                    "manufacturer": "biCOMM Design Ltd"
+                }
             }
-        }
-        discovery_topic = f"{MQTT_DISCOVERY_PREFIX}/sensor/{sensor['unique_id']}/config"
-        client.publish(discovery_topic, json.dumps(sensor), retain=True)
-        logger.info(f"Published MQTT discovery for {sensor['name']} to {discovery_topic}")
+            discovery_topic = f"{MQTT_DISCOVERY_PREFIX}/sensor/{sensor['unique_id']}/config"
+            await client.publish(discovery_topic, json.dumps(sensor), qos=1, retain=True)
+            logger.info(f"Published MQTT discovery for {sensor['name']} to {discovery_topic}")
 
-    # Publish MQTT Discovery for Slave Sensors
-    for pid, sensor_name in PID_DICT.items():
-        sensor = {
-            "name": f"CIS3 Slave 1 {sensor_name}",
-            "unique_id": f"cis3_slave_1_{sensor_name.lower()}",
-            "state_topic": f"cis3/slave_1/{sensor_name.lower()}",
-            "unit_of_measurement": "%" if sensor_name == "Humidity" else "°C",
-            "device_class": "humidity" if sensor_name == "Humidity" else "temperature",
-            "icon": "mdi:water-percent" if sensor_name == "Humidity" else "mdi:thermometer",
-            "value_template": "{{ value }}",
-            "availability_topic": "cis3/status",
-            "payload_available": "online",
-            "payload_not_available": "offline",
-            "device": {
-                "identifiers": ["cis3_device"],
-                "name": "CIS3 Device",
-                "model": "CIS3 PCB V3.0",
-                "manufacturer": "biCOMM Design Ltd"
+        # Publish MQTT Discovery for Slave Sensors
+        for pid, sensor_name in PID_DICT.items():
+            sensor = {
+                "name": f"CIS3 Slave 1 {sensor_name}",
+                "unique_id": f"cis3_slave_1_{sensor_name.lower()}",
+                "state_topic": f"cis3/slave_1/{sensor_name.lower()}",
+                "unit_of_measurement": "%" if sensor_name == "Humidity" else "°C",
+                "device_class": "humidity" if sensor_name == "Humidity" else "temperature",
+                "icon": "mdi:water-percent" if sensor_name == "Humidity" else "mdi:thermometer",
+                "value_template": "{{ value }}",
+                "availability_topic": "cis3/status",
+                "payload_available": "online",
+                "payload_not_available": "offline",
+                "device": {
+                    "identifiers": ["cis3_device"],
+                    "name": "CIS3 Device",
+                    "model": "CIS3 PCB V3.0",
+                    "manufacturer": "biCOMM Design Ltd"
+                }
             }
-        }
-        discovery_topic = f"{MQTT_DISCOVERY_PREFIX}/sensor/{sensor['unique_id']}/config"
-        client.publish(discovery_topic, json.dumps(sensor), retain=True)
-        logger.info(f"Published MQTT discovery for {sensor['name']} to {discovery_topic}")
+            discovery_topic = f"{MQTT_DISCOVERY_PREFIX}/sensor/{sensor['unique_id']}/config"
+            await client.publish(discovery_topic, json.dumps(sensor), qos=1, retain=True)
+            logger.info(f"Published MQTT discovery for {sensor['name']} to {discovery_topic}")
+    except Exception as e:
+        logger.error(f"Error publishing MQTT discovery: {e}")
 
-# -------------------- Main Processing Function --------------------
 async def process_adc_and_lin():
     """
     Main loop for handling ADC readings and LIN communication.
     Continuously reads sensor data, updates clients via WebSocket, and publishes to MQTT.
     """
-    while True:
-        # Process ADC Channels
-        for i in range(6):
-            if i < 4:
-                # Read and update voltage channels
-                voltage = process_adc_data(i)
-                latest_data["adc_channels"][f"channel_{i}"]["voltage"] = voltage
-                logger.debug(f"ADC Channel {i} Voltage: {voltage} V")
-            else:
-                # Read and update resistance channels
-                resistance = process_adc_data(i)
-                latest_data["adc_channels"][f"channel_{i}"]["resistance"] = resistance
-                logger.debug(f"ADC Channel {i} Resistance: {resistance} Ω")
+    try:
+        async with async_mqtt_client as client:
+            await client.publish("cis3/status", "online", qos=1, retain=True)
+            await publish_mqtt_discovery(client)  # Optimization 3: Publish discovery once
 
-        # Process LIN Communication for Each PID
-        for pid in PID_DICT.keys():
-            send_header(pid)  # Send SYNC + PID header
-            response = read_response(3, pid)  # Read response (2 data bytes + checksum)
-            if response:
-                process_response(response, pid)  # Process and update data
-            await asyncio.sleep(0.1)  # Short pause between requests
+            while True:
+                # Process ADC Channels
+                for i in range(6):
+                    if i < 4:
+                        # Read and update voltage channels
+                        voltage = process_adc_data(i)
+                        latest_data["adc_channels"][f"channel_{i}"]["voltage"] = voltage
+                        logger.debug(f"ADC Channel {i} Voltage: {voltage} V")
+                    else:
+                        # Read and update resistance channels
+                        resistance = process_adc_data(i)
+                        latest_data["adc_channels"][f"channel_{i}"]["resistance"] = resistance
+                        logger.debug(f"ADC Channel {i} Resistance: {resistance} Ω")
 
-        # Send Updated Data to All Connected WebSocket Clients
-        if clients:
-            data_to_send = json.dumps(latest_data)
-            await asyncio.gather(*(client.send(data_to_send) for client in clients))
-            logger.debug("Sent updated data to WebSocket clients.")
+                # Process LIN Communication for Each PID
+                for pid in PID_DICT.keys():
+                    send_header(pid)  # Send SYNC + PID header
+                    response = await read_response_async(3, pid)  # Optimization 1: Async read
+                    if response:
+                        process_response(response, pid)  # Process and update data
+                    await asyncio.sleep(0.1)  # Short pause between requests
 
-        # Publish Latest Data to MQTT
-        publish_to_mqtt()
+                # Send Updated Data to All Connected WebSocket Clients
+                if clients:
+                    data_to_send = json.dumps(latest_data)
+                    await asyncio.gather(*(client.send(data_to_send) for client in clients))
+                    logger.debug("Sent updated data to WebSocket clients.")  # Optimization 4: Efficient WebSocket handling
 
-        await asyncio.sleep(2)  # Interval between each loop iteration
+                # Publish Latest Data to MQTT
+                await publish_to_mqtt()  # Optimization 3: Asynchronous MQTT publishing
+
+                await asyncio.sleep(2)  # Interval between each loop iteration
+    except Exception as e:
+        logger.error(f"Error in ADC and LIN processing loop: {e}")
+    finally:
+        await async_mqtt_client.publish("cis3/status", "offline", qos=1, retain=True)
+        logger.info("Published offline status to MQTT.")
 
 # -------------------- Application Entry Point --------------------
 async def main():
     """
     Starts the Quart HTTP server and the ADC & LIN processing loop.
+    Handles graceful shutdown.
     """
     config = Config()
     config.bind = [f"0.0.0.0:{HTTP_PORT}"]  # Bind to all network interfaces on specified port
     logger.info(f"Starting Quart HTTP server on port {HTTP_PORT}")
-    quart_task = asyncio.create_task(serve(app, config))  # Start Quart server
+    
+    # Create tasks for Quart server and ADC & LIN processing
+    quart_task = asyncio.create_task(serve(app, config))
     logger.info("Quart HTTP server started.")
-    adc_lin_task = asyncio.create_task(process_adc_and_lin())  # Start ADC & LIN processing
+    adc_lin_task = asyncio.create_task(process_adc_and_lin())
     logger.info("ADC and LIN processing task started.")
+    
+    # Handle graceful shutdown on signals
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        asyncio.get_event_loop().add_signal_handler(sig, lambda sig=sig: asyncio.create_task(shutdown(sig)))
+
     await asyncio.gather(
         quart_task,
         adc_lin_task
     )
 
+async def shutdown(signal):
+    """
+    Gracefully shuts down the application on receiving termination signals.
+    
+    Args:
+        signal: The signal received.
+    """
+    logger.info(f"Received exit signal {signal.name}...")
+    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    list(map(lambda task: task.cancel(), tasks))
+    await asyncio.gather(*tasks, return_exceptions=True)
+    spi.close()  # Close SPI connection
+    ser.close()  # Close UART connection
+    logger.info("ADC, LIN & MQTT Advanced Add-on has been shut down.")
+    asyncio.get_event_loop().stop()
+
 if __name__ == '__main__':
     try:
-        asyncio.run(main())  # Run the main asynchronous function
+        asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Shutting down ADC, LIN & MQTT Advanced Add-on...")
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
     finally:
-        spi.close()  # Close SPI connection
-        ser.close()  # Close UART connection
-        mqtt_client.publish("cis3/status", "offline", retain=True)  # Publish offline status
-        mqtt_client.disconnect()  # Disconnect MQTT client
-        logger.info("ADC, LIN & MQTT Advanced Add-on has been shut down.")
+        spi.close()
+        ser.close()
+        # Note: MQTT offline status is handled in the processing loop's finally block
