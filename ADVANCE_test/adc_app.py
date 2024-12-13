@@ -9,12 +9,7 @@
 # Hardware PCB V3.0
 # Tool: Python 3
 #
-# Version: V01.01.09.2024.CIS3 - optimized
-# 1. TestSPI,ADC - work. Measurement Voltage 0-10 V, resistive 0-1000 ohm
-# 2. Test Power PI5V/4.5A - work
-# 3. Test ADC communication - work
-# 4. Test LIN communication - work
-# 5. - updated with MQTT integration and optimizations
+# Version: V01.01.10.2024.CIS3 - optimized with separate ADC and LIN tasks
 
 import os
 import time
@@ -36,11 +31,11 @@ import signal
 from logging.handlers import RotatingFileHandler
 
 logging.basicConfig(
-    level=logging.INFO,  # Optimization 6: Set appropriate logging level
+    level=logging.INFO,  # Set appropriate logging level
     format='[%(asctime)s] [%(name)s] %(levelname)s: %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
     handlers=[
-        RotatingFileHandler("adc_app.log", maxBytes=5*1024*1024, backupCount=5),  # Optimization 6: Log rotation
+        RotatingFileHandler("adc_app.log", maxBytes=5*1024*1024, backupCount=5),  # Log rotation
         logging.StreamHandler()
     ]
 )
@@ -64,6 +59,10 @@ ADC_RESOLUTION = 1023.0  # ADC resolution (10-bit)
 VOLTAGE_MULTIPLIER = 3.31  # Multiplier for voltage measurement
 RESISTANCE_REFERENCE = 10000  # Reference resistor value for resistance measurement
 MOVING_AVERAGE_WINDOW = 10  # Window size for moving average
+
+# Update Intervals (in seconds)
+ADC_UPDATE_INTERVAL = 0.1  # Update ADC every 0.1 seconds
+LIN_UPDATE_INTERVAL = 2.0  # Update LIN every 2 seconds (modifiable)
 
 # Supervisor Configuration (Environment Variables)
 SUPERVISOR_WS_URL = os.getenv("SUPERVISOR_WS_URL", "ws://supervisor/core/websocket")
@@ -188,15 +187,6 @@ except Exception as e:
     logger.error(f"UART initialization error: {e}")
     exit(1)
 
-# -------------------- MQTT Configuration --------------------
-# MQTT (Message Queuing Telemetry Transport) Configuration
-MQTT_BROKER = 'localhost'  # Should match with dashboard.py
-MQTT_PORT = 1883
-MQTT_USERNAME = 'mqtt'      # Should match with dashboard.py
-MQTT_PASSWORD = 'mqtt_pass' # Should match with dashboard.py
-MQTT_DISCOVERY_PREFIX = 'homeassistant'
-MQTT_CLIENT_ID = "cis3_adc_mqtt_client"
-
 # -------------------- Helper Functions --------------------
 def log_message(message, role="MASTER"):
     """
@@ -286,13 +276,13 @@ async def read_response_async(expected_data_length, pid):
                             buffer.extend(more_data)
                             log_message(f"Received bytes while waiting: {more_data.hex()}", role="MASTER")
                         else:
-                            await asyncio.sleep(0.01)  # Optimization 1: Use asyncio.sleep()
+                            await asyncio.sleep(0.01)  # Use asyncio.sleep()
                     if len(buffer) >= expected_length:
                         response = buffer[:expected_length]
                         log_message(f"Filtered Response after waiting: {response.hex()}", role="MASTER")
                         return response
         else:
-            await asyncio.sleep(0.01)  # Optimization 1: Use asyncio.sleep()
+            await asyncio.sleep(0.01)  # Use asyncio.sleep()
 
     log_message("No valid response received within timeout.", role="MASTER")
     return None
@@ -381,7 +371,7 @@ def process_adc_data(channel):
 
 async def publish_to_mqtt(client):
     """
-    Optimization 3: Publishes the latest sensor data to MQTT state topics asynchronously.
+    Publishes the latest sensor data to MQTT state topics asynchronously.
     
     Args:
         client (aiomqtt.Client): The MQTT client instance.
@@ -493,6 +483,60 @@ async def publish_mqtt_discovery(client):
     except Exception as e:
         logger.error(f"Error publishing MQTT discovery: {e}")
 
+# -------------------- ADC Reading Task --------------------
+async def adc_reading_task():
+    """
+    Task to read and process ADC channels at defined intervals.
+    """
+    while True:
+        for i in range(6):
+            if i < 4:
+                # Read and update voltage channels
+                voltage = process_adc_data(i)
+                latest_data["adc_channels"][f"channel_{i}"]["voltage"] = voltage
+                logger.debug(f"ADC Channel {i} Voltage: {voltage} V")
+            else:
+                # Read and update resistance channels
+                resistance = process_adc_data(i)
+                latest_data["adc_channels"][f"channel_{i}"]["resistance"] = resistance
+                logger.debug(f"ADC Channel {i} Resistance: {resistance} Ω")
+        await asyncio.sleep(ADC_UPDATE_INTERVAL)  # Wait for next ADC reading
+
+# -------------------- LIN Communication Task --------------------
+async def lin_communication_task():
+    """
+    Task to handle LIN communication for each PID at defined intervals.
+    """
+    while True:
+        for pid in PID_DICT.keys():
+            send_header(pid)  # Send SYNC + PID header
+            response = await read_response_async(3, pid)  # Async read
+            if response:
+                process_response(response, pid)  # Process and update data
+            await asyncio.sleep(0.1)  # Short pause between requests
+        await asyncio.sleep(LIN_UPDATE_INTERVAL - 0.1 * len(PID_DICT))  # Adjust sleep to maintain overall interval
+
+# -------------------- Data Sending Task --------------------
+async def data_sending_task(client):
+    """
+    Task to send updated data to MQTT and WebSocket at defined intervals.
+    
+    Args:
+        client (aiomqtt.Client): The MQTT client instance.
+    """
+    while True:
+        # Send Updated Data to All Connected WebSocket Clients
+        if clients:
+            data_to_send = json.dumps(latest_data)
+            await asyncio.gather(*(client.send(data_to_send) for client in clients))
+            logger.debug("Sent updated data to WebSocket clients.")
+
+        # Publish Latest Data to MQTT
+        await publish_to_mqtt(client)  # Async MQTT publishing
+
+        await asyncio.sleep(2)  # Interval between each data send
+
+# -------------------- Main Processing Function --------------------
 async def process_adc_and_lin():
     """
     Main loop for handling ADC readings and LIN communication.
@@ -507,40 +551,15 @@ async def process_adc_and_lin():
         ) as client:
             # Publish online status
             await client.publish("cis3/status", "online", qos=1, retain=True)
-            await publish_mqtt_discovery(client)  # Optimization 3: Publish discovery once
+            await publish_mqtt_discovery(client)  # Publish discovery messages once
 
-            while True:
-                # Process ADC Channels
-                for i in range(6):
-                    if i < 4:
-                        # Read and update voltage channels
-                        voltage = process_adc_data(i)
-                        latest_data["adc_channels"][f"channel_{i}"]["voltage"] = voltage
-                        logger.debug(f"ADC Channel {i} Voltage: {voltage} V")
-                    else:
-                        # Read and update resistance channels
-                        resistance = process_adc_data(i)
-                        latest_data["adc_channels"][f"channel_{i}"]["resistance"] = resistance
-                        logger.debug(f"ADC Channel {i} Resistance: {resistance} Ω")
+            # Create separate tasks for ADC, LIN, and Data Sending
+            adc_task = asyncio.create_task(adc_reading_task())
+            lin_task = asyncio.create_task(lin_communication_task())
+            data_send_task = asyncio.create_task(data_sending_task(client))
 
-                # Process LIN Communication for Each PID
-                for pid in PID_DICT.keys():
-                    send_header(pid)  # Send SYNC + PID header
-                    response = await read_response_async(3, pid)  # Optimization 1: Async read
-                    if response:
-                        process_response(response, pid)  # Process and update data
-                    await asyncio.sleep(0.1)  # Short pause between requests
-
-                # Send Updated Data to All Connected WebSocket Clients
-                if clients:
-                    data_to_send = json.dumps(latest_data)
-                    await asyncio.gather(*(client.send(data_to_send) for client in clients))
-                    logger.debug("Sent updated data to WebSocket clients.")  # Optimization 4: Efficient WebSocket handling
-
-                # Publish Latest Data to MQTT
-                await publish_to_mqtt(client)  # Optimization 3: Asynchronous MQTT publishing
-
-                await asyncio.sleep(2)  # Interval between each loop iteration
+            # Wait for all tasks to complete (which they won't, unless cancelled)
+            await asyncio.gather(adc_task, lin_task, data_send_task)
     except Exception as e:
         logger.error(f"Error in ADC and LIN processing loop: {e}")
     finally:
