@@ -18,7 +18,7 @@ RUN pip3 install --no-cache-dir \
     pyserial-asyncio \
     aiofiles \
     hypercorn    
-RUN pip3 install --no-cache-dir asyncio_mqtt
+RUN pip3 install --no-cache-dir aiomqtt
 
 # Copy application files into the container
 COPY adc_app.py /
