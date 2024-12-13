@@ -16,6 +16,7 @@
 # 4. Test LIN communication - work
 # 5. - updated with MQTT integration
 
+
 import os
 import time
 import asyncio
@@ -35,7 +36,11 @@ import threading
 logging.basicConfig(
     level=logging.DEBUG,
     format='[%(asctime)s] [%(name)s] %(levelname)s: %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    datefmt='%Y-%m-%d %H:%M:%S',
+    handlers=[
+        logging.FileHandler("adc_app.log"),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger('ADC, LIN & MQTT')
 
@@ -204,7 +209,7 @@ mqtt_thread.start()
 
 # Log helper
 def log_message(message, role="MASTER"):
-    print(f"[{datetime.now()}] [{role}] {message}", flush=True)
+    logger.info(f"[{role}] {message}")
 
 def enhanced_checksum(data):
     """
@@ -393,7 +398,7 @@ def publish_mqtt_discovery(client):
             state_topic = f"cis3/{channel}/resistance"
             unique_id = f"cis3_{channel}_resistance"
             name = f"CIS3 Channel {i} Resistance"
-            device_class = "current"
+            device_class = "resistance"  # Changed to 'resistance' device class
             icon = "mdi:water-percent"
             value_template = "{{ value }}"
 
