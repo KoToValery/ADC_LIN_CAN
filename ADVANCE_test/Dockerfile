@@ -16,8 +16,8 @@ RUN pip3 install --no-cache-dir \
     spidev \
     pyserial \
     pyserial-asyncio \
-    paho-mqtt \
     hypercorn    
+RUN pip3 install --no-cache-dir paho-mqtt
 
 # Copy application files into the container
 COPY adc_app.py /
