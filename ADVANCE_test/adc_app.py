@@ -16,19 +16,6 @@
 # 4. Test LIN communication - work
 # 5. - updated with MQTT integration
 
-# adc_app.py
-# Copyright 2004 - 2024  biCOMM Design Ltd
-#
-# AUTH: Kostadin Tosev
-# DATE: 2024
-#
-# Target: RPi5
-# Project CIS3
-# Hardware PCB V3.0
-# Tool: Python 3
-#
-# Version: V01.01.10.2024.CIS3 - updated with paho-mqtt integration
-
 import os
 import time
 import asyncio
@@ -170,18 +157,18 @@ except Exception as e:
     exit(1)
 
 # MQTT Configuration
-MQTT_BROKER = os.getenv("MQTT_BROKER", "localhost")
-MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
-MQTT_USERNAME = os.getenv("MQTT_USERNAME", "")
-MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "")
-MQTT_DISCOVERY_PREFIX = os.getenv("MQTT_DISCOVERY_PREFIX", "homeassistant")
-MQTT_CLIENT_ID = os.getenv("MQTT_CLIENT_ID", "cis3_adc_mqtt_client")
+MQTT_BROKER = 'localhost'  # Match with dashboard.py
+MQTT_PORT = 1883
+MQTT_USERNAME = 'mqtt'      # Match with dashboard.py
+MQTT_PASSWORD = 'mqtt_pass' # Match with dashboard.py
+MQTT_DISCOVERY_PREFIX = 'homeassistant'
+MQTT_CLIENT_ID = "cis3_adc_mqtt_client"
 
 # Initialize MQTT client
 mqtt_client = mqtt.Client(client_id=MQTT_CLIENT_ID, clean_session=True)
 
-if MQTT_USERNAME and MQTT_PASSWORD:
-    mqtt_client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
+# Set MQTT credentials
+mqtt_client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
 
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
@@ -192,7 +179,7 @@ def on_connect(client, userdata, flags, rc):
         logger.error(f"Failed to connect to MQTT Broker, return code {rc}")
 
 def on_disconnect(client, userdata, rc):
-    logger.warning("Disconnected from MQTT Broker.")
+    logger.warning(f"Disconnected from MQTT Broker with return code {rc}")
     if rc != 0:
         logger.warning("Unexpected disconnection. Attempting to reconnect.")
         try:
@@ -200,6 +187,7 @@ def on_disconnect(client, userdata, rc):
         except Exception as e:
             logger.error(f"Reconnection failed: {e}")
 
+# Register callback functions
 mqtt_client.on_connect = on_connect
 mqtt_client.on_disconnect = on_disconnect
 
@@ -210,6 +198,7 @@ def mqtt_loop():
     except Exception as e:
         logger.error(f"MQTT loop error: {e}")
 
+# Start MQTT loop in a separate thread
 mqtt_thread = threading.Thread(target=mqtt_loop, daemon=True)
 mqtt_thread.start()
 
@@ -394,7 +383,7 @@ def publish_mqtt_discovery(client):
             unit = "V"
             state_topic = f"cis3/{channel}/voltage"
             unique_id = f"cis3_{channel}_voltage"
-            name = f"CIS3 {channel.replace('_', ' ').title()} Voltage"
+            name = f"CIS3 Channel {i} Voltage"
             device_class = "voltage"
             icon = "mdi:flash"
             value_template = "{{ value }}"
@@ -403,7 +392,7 @@ def publish_mqtt_discovery(client):
             unit = "Ω"
             state_topic = f"cis3/{channel}/resistance"
             unique_id = f"cis3_{channel}_resistance"
-            name = f"CIS3 {channel.replace('_', ' ').title()} Resistance"
+            name = f"CIS3 Channel {i} Resistance"
             device_class = "current"
             icon = "mdi:water-percent"
             value_template = "{{ value }}"
