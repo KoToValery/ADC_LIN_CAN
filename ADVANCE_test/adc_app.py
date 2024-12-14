@@ -8,12 +8,12 @@
 # Hardware PCB V3.0
 # Tool: Python 3
 #
-# Version: V01.01.10.2024.CIS3 - updated with MA integrated into EMA and optimized logging
+# Version: V01.01.11.2024.CIS3 - optimized async handling and logging
 # 1. TestSPI,ADC - work. Measurement Voltage 0-10 V, resistive 0-1000 ohm
 # 2. Test Power PI5V/4.5A - work
 # 3. Test ADC communication - work
 # 4. Test LIN communication - work
-# 5. - updated with MQTT integration and integrated Moving Average into EMA
+# 5. - updated with MQTT integration, integrated Moving Average into EMA, optimized logging
 
 import os
 import time
@@ -58,11 +58,11 @@ VOLTAGE_MULTIPLIER = 3.31  # Multiplier for voltage measurement
 RESISTANCE_REFERENCE = 10000  # Reference resistor value for resistance measurement
 
 # EMA Configuration
-VOLTAGE_EMA_ALPHA = 0.1
+VOLTAGE_EMA_ALPHA = 0.2
 RESISTANCE_EMA_ALPHA = 0.1
 
 # Moving Average Configuration
-VOLTAGE_MA = 10
+VOLTAGE_MA = 30
 RESISTANCE_MA = 30
 
 # MQTT Configuration
@@ -77,9 +77,9 @@ MQTT_CLIENT_ID = "cis3_adc_mqtt_client"
 HTTP_PORT = 8080  # Define HTTP server port
 
 # Update Intervals (in seconds)
-ADC_UPDATE_INTERVAL = 0.02  # Update ADC every 0.01 seconds
-LIN_UPDATE_INTERVAL = 2.0  # Update LIN every 1 second (modifiable)
-DATA_SEND_INTERVAL = 2.0  # Send data to MQTT and WebSocket every 1 second
+ADC_UPDATE_INTERVAL = 0.01  # Update ADC every 0.01 seconds
+LIN_UPDATE_INTERVAL = 1.0  # Update LIN every 1 second (modifiable)
+DATA_SEND_INTERVAL = 1.0  # Send data to MQTT and WebSocket every 1 second
 
 # -------------------- Data Initialization --------------------
 # Initialize a dictionary to hold the latest sensor data
@@ -191,6 +191,28 @@ values_ema_voltage = {i: None for i in range(4)}
 values_ema_resistance = {i: None for i in range(4, 6)}
 
 # -------------------- Helper Functions --------------------
+async def send_break():
+    """
+    Sends a BREAK signal for LIN communication by setting the break condition on UART.
+    """
+    ser.break_condition = True
+    await asyncio.sleep(BREAK_DURATION)  # Hold break condition
+    ser.break_condition = False
+    await asyncio.sleep(0.0001)  # Short pause after releasing break
+
+async def send_header(pid):
+    """
+    Sends SYNC + PID header to the slave device and clears the UART buffer.
+
+    Args:
+        pid (int): Parameter Identifier to send.
+    """
+    ser.reset_input_buffer()  # Clear UART buffer before sending
+    await send_break()  # Send BREAK signal
+    ser.write(bytes([SYNC_BYTE, pid]))  # Write SYNC and PID bytes
+    logger.info(f"Sent Header: SYNC=0x{SYNC_BYTE:02X}, PID=0x{pid:02X} ({PID_DICT.get(pid, 'Unknown')})")
+    await asyncio.sleep(0.1)  # Short pause for slave processing
+
 def apply_ma_then_ema(value, channel, is_voltage):
     """
     Applies Moving Average (MA) followed by Exponential Moving Average (EMA) to the provided value.
@@ -289,28 +311,6 @@ PID_DICT = {
     PID_TEMPERATURE: 'Temperature',
     PID_HUMIDITY: 'Humidity'
 }
-
-def send_break():
-    """
-    Sends a BREAK signal for LIN communication by setting the break condition on UART.
-    """
-    ser.break_condition = True
-    time.sleep(BREAK_DURATION)  # Hold break condition
-    ser.break_condition = False
-    time.sleep(0.0001)  # Short pause after releasing break
-
-def send_header(pid):
-    """
-    Sends SYNC + PID header to the slave device and clears the UART buffer.
-
-    Args:
-        pid (int): Parameter Identifier to send.
-    """
-    ser.reset_input_buffer()  # Clear UART buffer before sending
-    send_break()  # Send BREAK signal
-    ser.write(bytes([SYNC_BYTE, pid]))  # Write SYNC and PID bytes
-    logger.info(f"Sent Header: SYNC=0x{SYNC_BYTE:02X}, PID=0x{pid:02X} ({PID_DICT.get(pid, 'Unknown')})")
-    time.sleep(0.1)  # Short pause for slave processing
 
 async def read_response_async(expected_data_length, pid):
     """
@@ -563,7 +563,7 @@ async def lin_communication_task():
     while True:
         start_time = time.time()
         for pid in PID_DICT.keys():
-            send_header(pid)  # Send SYNC + PID header
+            await send_header(pid)  # Send SYNC + PID header
             response = await read_response_async(3, pid)  # Async read
             if response:
                 process_response(response, pid)  # Process and update data
