@@ -16,14 +16,6 @@
 # 4. Test LIN communication - work
 # 5. - updated with MQTT integration
 
-# Changes requested:
-# 1. For voltage channels (0-3): Apply a 20-sample Moving Average (MA) then apply Exponential Moving Average (EMA) with alpha=0.2.
-# 2. For resistance channels (4-5): Apply a 30-sample MA then EMA with alpha=0.1.
-# 3. ADC calculations to run every 0.1s for all channels simultaneously.
-# 4. LIN communication every 2s.
-# 5. MQTT publishing every 1s.
-# 6. WebSocket broadcast every 1s.
-# Keep logic intact, reduce unnecessary logs, remove Bulgarian comments, and make all comments in English.
 
 import os
 import time
@@ -36,10 +28,10 @@ import serial
 import json
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
-from datetime import datetime
 import paho.mqtt.client as mqtt
 import threading
 
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='[%(asctime)s] [%(name)s] %(levelname)s: %(message)s',
@@ -66,11 +58,15 @@ VOLTAGE_MULTIPLIER = 3.31
 RESISTANCE_REFERENCE = 10000
 
 # Set intervals for tasks
-ADC_INTERVAL = 0.1
-LIN_INTERVAL = 2
-MQTT_INTERVAL = 1
-WS_INTERVAL = 1
+ADC_INTERVAL = 0.01  # seconds
+LIN_INTERVAL = 2    # seconds
+MQTT_INTERVAL = 1   # seconds
+WS_INTERVAL = 1     # seconds
 
+# Voltage threshold to eliminate minor noise
+VOLTAGE_THRESHOLD = 0.02  # Volts
+
+# Environment Variables
 SUPERVISOR_WS_URL = os.getenv("SUPERVISOR_WS_URL", "ws://supervisor/core/websocket")
 SUPERVISOR_TOKEN = os.getenv("SUPERVISOR_TOKEN")
 INGRESS_PATH = os.getenv('INGRESS_PATH', '')
@@ -79,17 +75,21 @@ if not SUPERVISOR_TOKEN:
     logger.error("SUPERVISOR_TOKEN is not set. Exiting.")
     exit(1)
 
-# LIN constants
+# LIN Constants
 SYNC_BYTE = 0x55
-BREAK_DURATION = 1.35e-3
-PID_TEMPERATURE = 0x50
-PID_HUMIDITY = 0x51
+BREAK_DURATION = 1.35e-3  # 1.35ms break signal
 
+# PID Definitions
+PID_TEMPERATURE = 0x50
+PID_HUMIDITY = 0x51  # New PID for Humidity
+
+# PID Dictionary
 PID_DICT = {
     PID_TEMPERATURE: 'Temperature',
     PID_HUMIDITY: 'Humidity'
 }
 
+# Initialize data structure
 latest_data = {
     "adc_channels": {
         "channel_0": {"voltage": 0.0, "unit": "V"},
@@ -107,8 +107,10 @@ latest_data = {
     }
 }
 
+# Initialize Quart application
 app = Quart(__name__)
 
+# Limit Quart logs
 quart_log = logging.getLogger('quart.app')
 quart_log.setLevel(logging.ERROR)
 
@@ -141,7 +143,7 @@ async def ws_route():
     finally:
         clients.remove(websocket._get_current_object())
 
-# SPI initialization
+# Initialize SPI
 spi = spidev.SpiDev()
 try:
     spi.open(SPI_BUS, SPI_DEVICE)
@@ -151,17 +153,17 @@ try:
 except Exception as e:
     logger.error(f"SPI initialization error: {e}")
 
-# UART initialization
+# UART Configuration
 UART_PORT = '/dev/ttyAMA2'
 UART_BAUDRATE = 9600
 try:
     ser = serial.Serial(UART_PORT, UART_BAUDRATE, timeout=1)
     logger.info(f"UART interface initialized on {UART_PORT}.")
 except Exception as e:
-    logger.error(f"UART init error: {e}")
+    logger.error(f"UART initialization error: {e}")
     exit(1)
 
-# MQTT setup
+# MQTT Configuration
 MQTT_BROKER = 'localhost'
 MQTT_PORT = 1883
 MQTT_USERNAME = 'mqtt'
@@ -169,6 +171,7 @@ MQTT_PASSWORD = 'mqtt_pass'
 MQTT_DISCOVERY_PREFIX = 'homeassistant'
 MQTT_CLIENT_ID = "cis3_adc_mqtt_client"
 
+# Initialize MQTT client
 mqtt_client = mqtt.Client(client_id=MQTT_CLIENT_ID, clean_session=True)
 mqtt_client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
 
@@ -184,6 +187,7 @@ def on_disconnect(client, userdata, rc):
     if rc != 0:
         logger.warning("Unexpected MQTT disconnection.")
 
+# Register callback functions
 mqtt_client.on_connect = on_connect
 mqtt_client.on_disconnect = on_disconnect
 
@@ -194,26 +198,39 @@ def mqtt_loop():
     except Exception as e:
         logger.error(f"MQTT loop error: {e}")
 
+# Start MQTT loop in a separate thread
 mqtt_thread = threading.Thread(target=mqtt_loop, daemon=True)
 mqtt_thread.start()
 
 def enhanced_checksum(data):
+    """
+    Calculates the checksum by summing all bytes, taking the lowest byte, and returning its inverse.
+    """
     checksum = sum(data) & 0xFF
     return (~checksum) & 0xFF
 
 def send_break():
+    """
+    Sends a BREAK signal for LIN communication.
+    """
     ser.break_condition = True
     time.sleep(BREAK_DURATION)
     ser.break_condition = False
     time.sleep(0.0001)
 
 def send_header(pid):
+    """
+    Sends SYNC + PID header to the slave and clears the UART buffer.
+    """
     ser.reset_input_buffer()
     send_break()
     ser.write(bytes([SYNC_BYTE, pid]))
     time.sleep(0.1)
 
 def read_response(expected_data_length, pid):
+    """
+    Reads the response from the slave, looking for SYNC + PID and then extracting the data.
+    """
     expected_length = expected_data_length
     start_time = time.time()
     buffer = bytearray()
@@ -244,6 +261,9 @@ def read_response(expected_data_length, pid):
     return None
 
 def process_response(response, pid):
+    """
+    Processes the received response, checks the checksum, and updates the data.
+    """
     if response and len(response) == 3:
         data = response[:2]
         received_checksum = response[2]
@@ -262,6 +282,9 @@ resistance_buffers = {ch: deque(maxlen=30) for ch in range(4,6)}
 ema_values = {ch: None for ch in range(6)}
 
 def read_adc(channel):
+    """
+    Reads the raw ADC value from a specific channel.
+    """
     if 0 <= channel <= 7:
         cmd = [1, (8 + channel) << 4, 0]
         try:
@@ -273,34 +296,49 @@ def read_adc(channel):
     return 0
 
 def calculate_voltage_from_raw(raw_value):
+    """
+    Converts raw ADC value to voltage.
+    """
     return (raw_value / ADC_RESOLUTION) * VREF * VOLTAGE_MULTIPLIER
 
 def calculate_resistance_from_raw(raw_value):
+    """
+    Converts raw ADC value to resistance.
+    """
     if raw_value == 0:
         return 0.0
     return ((RESISTANCE_REFERENCE * (ADC_RESOLUTION - raw_value)) / raw_value) / 10
 
 def publish_to_mqtt():
-    # ADC
+    """
+    Publishes the latest data to MQTT state topics.
+    """
+    # ADC Channels
     for i in range(6):
         channel = f"channel_{i}"
         adc_data = latest_data["adc_channels"][channel]
         if i < 4:
+            # Voltage
             state_topic = f"cis3/{channel}/voltage"
             payload = adc_data["voltage"]
             mqtt_client.publish(state_topic, str(payload))
         else:
+            # Resistance
             state_topic = f"cis3/{channel}/resistance"
             payload = adc_data["resistance"]
             mqtt_client.publish(state_topic, str(payload))
 
-    # Slave sensors
+    # Slave Sensors
     slave = latest_data["slave_sensors"]["slave_1"]
     for sensor, value in slave.items():
         state_topic = f"cis3/slave_1/{sensor.lower()}"
         mqtt_client.publish(state_topic, str(value))
 
 def publish_mqtt_discovery(client):
+    """
+    Publishes MQTT discovery messages for all sensors.
+    """
+    # ADC Channels
     for i in range(6):
         channel = f"channel_{i}"
         if i < 4:
@@ -328,7 +366,7 @@ def publish_mqtt_discovery(client):
                 "unique_id": f"cis3_{channel}_resistance",
                 "state_topic": f"cis3/{channel}/resistance",
                 "unit_of_measurement": "Ω",
-                "device_class": "pressure",  # no direct resistance class, using pressure as a placeholder
+                "device_class": "resistance",  # Note: 'resistance' may not be a standard device class
                 "icon": "mdi:water-percent",
                 "value_template": "{{ value }}",
                 "availability_topic": "cis3/status",
@@ -344,6 +382,7 @@ def publish_mqtt_discovery(client):
         discovery_topic = f"{MQTT_DISCOVERY_PREFIX}/sensor/{sensor['unique_id']}/config"
         client.publish(discovery_topic, json.dumps(sensor), retain=True)
 
+    # Slave Sensors
     for pid, sensor_name in PID_DICT.items():
         sensor = {
             "name": f"CIS3 Slave 1 {sensor_name}",
@@ -367,6 +406,9 @@ def publish_mqtt_discovery(client):
         client.publish(discovery_topic, json.dumps(sensor), retain=True)
 
 async def process_all_adc_channels():
+    """
+    Reads and processes ADC data for all channels with filtering.
+    """
     # Read raw values for all channels first
     raw_values = [read_adc(ch) for ch in range(6)]
 
@@ -382,6 +424,9 @@ async def process_all_adc_channels():
                 ema_values[ch] = ma_voltage
             else:
                 ema_values[ch] = alpha * ma_voltage + (1 - alpha) * ema_values[ch]
+            # Apply voltage threshold
+            if ema_values[ch] < VOLTAGE_THRESHOLD:
+                ema_values[ch] = 0.0
             latest_data["adc_channels"][f"channel_{ch}"]["voltage"] = round(ema_values[ch], 2)
 
     # Resistance channels 4-5
@@ -398,6 +443,9 @@ async def process_all_adc_channels():
             latest_data["adc_channels"][f"channel_{ch}"]["resistance"] = round(ema_values[ch], 2)
 
 async def process_lin_communication():
+    """
+    Handles LIN communication with slaves.
+    """
     for pid in PID_DICT.keys():
         send_header(pid)
         response = read_response(3, pid)
@@ -405,34 +453,55 @@ async def process_lin_communication():
             process_response(response, pid)
 
 async def broadcast_via_websocket():
+    """
+    Broadcasts the latest data to all connected WebSocket clients.
+    """
     if clients:
         data_to_send = json.dumps(latest_data)
         await asyncio.gather(*(client.send(data_to_send) for client in clients))
 
 async def mqtt_publish_task():
+    """
+    Publishes data to MQTT topics.
+    """
     publish_to_mqtt()
 
 async def adc_loop():
+    """
+    Periodically processes ADC data.
+    """
     while True:
         await process_all_adc_channels()
         await asyncio.sleep(ADC_INTERVAL)
 
 async def lin_loop():
+    """
+    Periodically handles LIN communication.
+    """
     while True:
         await process_lin_communication()
         await asyncio.sleep(LIN_INTERVAL)
 
 async def mqtt_loop_task():
+    """
+    Periodically publishes data to MQTT.
+    """
     while True:
         await mqtt_publish_task()
         await asyncio.sleep(MQTT_INTERVAL)
 
 async def websocket_loop():
+    """
+    Periodically broadcasts data via WebSocket.
+    """
     while True:
         await broadcast_via_websocket()
         await asyncio.sleep(WS_INTERVAL)
 
 async def main():
+    """
+    Starts the Quart HTTP server and all asynchronous tasks.
+    """
     config = Config()
     config.bind = [f"0.0.0.0:{HTTP_PORT}"]
     quart_task = asyncio.create_task(serve(app, config))
@@ -454,8 +523,4 @@ if __name__ == '__main__':
         ser.close()
         mqtt_client.publish("cis3/status", "offline", retain=True)
         mqtt_client.disconnect()
-        logger.info("Shut down complete.")
-
-        mqtt_client.publish("cis3/status", "offline", retain=True)
-        mqtt_client.disconnect()
-        logger.info("ADC, LIN & MQTT Advanced Add-on has been shut down.")
+        logger.info("ADC, LIN & MQTT Add-on has been shut down.")
