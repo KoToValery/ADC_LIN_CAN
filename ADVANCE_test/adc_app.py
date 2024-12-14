@@ -1,3 +1,4 @@
+# adc_app.py
 # Copyright 2004 - 2024 biCOMM Design Ltd
 #
 # AUTH: Kostadin Tosev
@@ -8,34 +9,33 @@
 # Hardware PCB V3.0
 # Tool: Python 3
 #
-# Version: V01.01.09.2024.CIS3 - temporary 01
-# 1. TestSPI,ADC - work. Measurement Voltage 0-10 V, resistive 0-1000 ohm
-# 2. Test Power PI5V/4.5A - work
-# 3. Test ADC communication - work
-# 4. Test LIN communication - work
-# 5. - updated with MQTT integration
+# Version: V01.01.10.2024.CIS3 - optimized with separate ADC and LIN tasks
+
 import os
 import time
-import json
 import asyncio
 import spidev
 from collections import deque
 from quart import Quart, jsonify, send_from_directory, websocket
 import logging
 import serial
+import json
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
-import aiomqtt
-import aiofiles
+from datetime import datetime
+import aiomqtt  # Updated import for aiomqtt
+import aiofiles  # For asynchronous file operations if needed
 import signal
 
 # -------------------- Logging Configuration --------------------
+from logging.handlers import RotatingFileHandler
+
 logging.basicConfig(
     level=logging.INFO,  # Set appropriate logging level
     format='[%(asctime)s] [%(name)s] %(levelname)s: %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
     handlers=[
-        logging.FileHandler("adc_app.log"),
+        RotatingFileHandler("adc_app.log", maxBytes=5*1024*1024, backupCount=5),  # Log rotation
         logging.StreamHandler()
     ]
 )
@@ -44,6 +44,9 @@ logger = logging.getLogger('ADC, LIN & MQTT')
 logger.info("ADC, LIN & MQTT Advanced Add-on started.")
 
 # -------------------- Configuration Settings --------------------
+# HTTP Server Configuration
+HTTP_PORT = 8099
+
 # SPI (Serial Peripheral Interface) Configuration for ADC
 SPI_BUS = 1
 SPI_DEVICE = 1
@@ -55,23 +58,35 @@ VREF = 3.3  # Reference voltage for ADC
 ADC_RESOLUTION = 1023.0  # ADC resolution (10-bit)
 VOLTAGE_MULTIPLIER = 3.31  # Multiplier for voltage measurement
 RESISTANCE_REFERENCE = 10000  # Reference resistor value for resistance measurement
-
-# EMA Configuration
-VOLTAGE_EMA_ALPHA = 0.2
-RESISTANCE_EMA_ALPHA = 0.1
-
-# MQTT Configuration
-MQTT_BROKER = 'localhost'
-MQTT_PORT = 1883
-MQTT_USERNAME = 'mqtt'
-MQTT_PASSWORD = 'mqtt_pass'
-MQTT_DISCOVERY_PREFIX = 'homeassistant'
-MQTT_CLIENT_ID = "cis3_adc_mqtt_client"
+MOVING_AVERAGE_WINDOW = 10  # Window size for moving average
 
 # Update Intervals (in seconds)
-ADC_UPDATE_INTERVAL = 0.01  # Update ADC every 0.1 seconds
-LIN_UPDATE_INTERVAL = 1.0  # Update LIN every 2 seconds (modifiable)
-DATA_SEND_INTERVAL = 1.0  # Send data to MQTT and WebSocket every 2 seconds
+ADC_UPDATE_INTERVAL = 0.1  # Update ADC every 0.1 seconds
+LIN_UPDATE_INTERVAL = 2.0  # Update LIN every 2 seconds (modifiable)
+
+# Supervisor Configuration (Environment Variables)
+SUPERVISOR_WS_URL = os.getenv("SUPERVISOR_WS_URL", "ws://supervisor/core/websocket")
+SUPERVISOR_TOKEN = os.getenv("SUPERVISOR_TOKEN")
+INGRESS_PATH = os.getenv('INGRESS_PATH', '')
+
+# Validate Supervisor Token
+if not SUPERVISOR_TOKEN:
+    logger.error("SUPERVISOR_TOKEN is not set. Exiting.")
+    exit(1)
+
+# LIN (Local Interconnect Network) Constants
+SYNC_BYTE = 0x55  # Synchronization byte for LIN communication
+BREAK_DURATION = 1.35e-3  # Duration of break signal in seconds (1.35ms)
+
+# PID (Parameter Identifier) Definitions
+PID_TEMPERATURE = 0x50
+PID_HUMIDITY = 0x51  # New PID for Humidity
+
+# Dictionary mapping PIDs to sensor names
+PID_DICT = {
+    PID_TEMPERATURE: 'Temperature',
+    PID_HUMIDITY: 'Humidity'
+}
 
 # -------------------- Data Initialization --------------------
 # Initialize a dictionary to hold the latest sensor data
@@ -160,7 +175,6 @@ try:
     logger.info("SPI interface for ADC initialized.")
 except Exception as e:
     logger.error(f"SPI initialization error: {e}")
-    exit(1)
 
 # -------------------- UART Configuration --------------------
 # UART (Universal Asynchronous Receiver/Transmitter) Configuration for LIN
@@ -173,31 +187,138 @@ except Exception as e:
     logger.error(f"UART initialization error: {e}")
     exit(1)
 
-# -------------------- Filter State --------------------
-# Initialize EMA state dictionaries
-values_ema_voltage = {i: None for i in range(4)}
-values_ema_resistance = {i: None for i in range(4, 6)}
-
 # -------------------- Helper Functions --------------------
-def apply_ema(value, channel, is_voltage):
+def log_message(message, role="MASTER"):
     """
-    Applies Exponential Moving Average (EMA) filtering to the provided value.
+    Logs a message with a specified role.
     
     Args:
-        value (float): The current ADC value (voltage or resistance).
-        channel (int): The ADC channel number.
-        is_voltage (bool): Flag indicating if the value is voltage (True) or resistance (False).
+        message (str): The message to log.
+        role (str): The role or context of the message.
+    """
+    logger.info(f"[{role}] {message}")
+
+def enhanced_checksum(data):
+    """
+    Calculates the checksum by summing all bytes, taking the lowest byte, and returning its inverse.
+    
+    Args:
+        data (list): List of integer byte values.
     
     Returns:
-        float: The filtered EMA value.
+        int: Calculated checksum byte.
     """
-    ema_values = values_ema_voltage if is_voltage else values_ema_resistance
-    alpha = VOLTAGE_EMA_ALPHA if is_voltage else RESISTANCE_EMA_ALPHA
-    if ema_values[channel] is None:
-        ema_values[channel] = value
+    checksum = sum(data) & 0xFF
+    return (~checksum) & 0xFF
+
+def send_break():
+    """
+    Sends a BREAK signal for LIN communication by setting the break condition on UART.
+    """
+    ser.break_condition = True
+    time.sleep(BREAK_DURATION)  # Hold break condition
+    ser.break_condition = False
+    time.sleep(0.0001)  # Short pause after releasing break
+
+def send_header(pid):
+    """
+    Sends SYNC + PID header to the slave device and clears the UART buffer.
+    
+    Args:
+        pid (int): Parameter Identifier to send.
+    """
+    ser.reset_input_buffer()  # Clear UART buffer before sending
+    send_break()  # Send BREAK signal
+    ser.write(bytes([SYNC_BYTE, pid]))  # Write SYNC and PID bytes
+    log_message(f"Sent Header: SYNC=0x{SYNC_BYTE:02X}, PID=0x{pid:02X} ({PID_DICT.get(pid, 'Unknown')})")
+    time.sleep(0.1)  # Short pause for slave processing
+
+async def read_response_async(expected_data_length, pid):
+    """
+    Reads the response from the slave device asynchronously, looking for SYNC + PID and then extracting the data.
+    
+    Args:
+        expected_data_length (int): Number of bytes expected after SYNC + PID.
+        pid (int): Parameter Identifier to match in the response.
+    
+    Returns:
+        bytearray or None: The response data if valid, otherwise None.
+    """
+    expected_length = expected_data_length  # Number of data bytes expected
+    start_time = time.time()
+    buffer = bytearray()
+    sync_pid = bytes([SYNC_BYTE, pid])
+
+    while (time.time() - start_time) < 2.0:  # Timeout after 2 seconds
+        if ser.in_waiting > 0:
+            data = ser.read(ser.in_waiting)  # Read available bytes
+            buffer.extend(data)
+            log_message(f"Received bytes: {data.hex()}", role="MASTER")
+
+            # Search for SYNC + PID sequence in the buffer
+            index = buffer.find(sync_pid)
+            if index != -1:
+                log_message(f"Found SYNC + PID at index {index}: {buffer[index:index+2].hex()}", role="MASTER")
+                # Remove everything before and including SYNC + PID
+                buffer = buffer[index + 2:]
+                log_message(f"Filtered Buffer after SYNC + PID: {buffer.hex()}", role="MASTER")
+
+                # Check if there are enough bytes for data and checksum
+                if len(buffer) >= expected_length:
+                    response = buffer[:expected_length]
+                    log_message(f"Filtered Response: {response.hex()}", role="MASTER")
+                    return response
+                else:
+                    # Wait for the remaining data
+                    while len(buffer) < expected_length and (time.time() - start_time) < 2.0:
+                        if ser.in_waiting > 0:
+                            more_data = ser.read(ser.in_waiting)
+                            buffer.extend(more_data)
+                            log_message(f"Received bytes while waiting: {more_data.hex()}", role="MASTER")
+                        else:
+                            await asyncio.sleep(0.01)  # Use asyncio.sleep()
+                    if len(buffer) >= expected_length:
+                        response = buffer[:expected_length]
+                        log_message(f"Filtered Response after waiting: {response.hex()}", role="MASTER")
+                        return response
+        else:
+            await asyncio.sleep(0.01)  # Use asyncio.sleep()
+
+    log_message("No valid response received within timeout.", role="MASTER")
+    return None
+
+def process_response(response, pid):
+    """
+    Processes the received response, checks the checksum, and updates the latest data.
+    
+    Args:
+        response (bytearray): The response data from the slave.
+        pid (int): Parameter Identifier associated with the response.
+    """
+    if response and len(response) == 3:
+        data = response[:2]  # Extract data bytes
+        received_checksum = response[2]  # Extract checksum byte
+        calculated_checksum = enhanced_checksum([pid] + list(data))  # Calculate expected checksum
+        log_message(f"Received Checksum: 0x{received_checksum:02X}, Calculated Checksum: 0x{calculated_checksum:02X}", role="MASTER")
+
+        if received_checksum == calculated_checksum:
+            value = int.from_bytes(data, 'little') / 100.0  # Convert bytes to float value
+            sensor = PID_DICT.get(pid, 'Unknown')
+            if sensor == 'Temperature':
+                log_message(f"Temperature: {value:.2f}°C", role="MASTER")
+                latest_data["slave_sensors"]["slave_1"]["Temperature"] = value  # Update temperature
+            elif sensor == 'Humidity':
+                log_message(f"Humidity: {value:.2f}%", role="MASTER")
+                latest_data["slave_sensors"]["slave_1"]["Humidity"] = value  # Update humidity
+            else:
+                log_message(f"Unknown PID {pid}: Value={value}", role="MASTER")
+        else:
+            log_message("Checksum mismatch.", role="MASTER")
     else:
-        ema_values[channel] = alpha * value + (1 - alpha) * ema_values[channel]
-    return ema_values[channel]
+        log_message("Invalid response length.", role="MASTER")
+
+# Initialize moving average buffers for ADC channels
+buffers_ma = {i: deque(maxlen=MOVING_AVERAGE_WINDOW) for i in range(6)}
 
 def read_adc(channel):
     """
@@ -222,169 +343,32 @@ def read_adc(channel):
     logger.warning(f"Invalid ADC channel: {channel}")
     return 0
 
-def calculate_voltage(adc_value):
+def process_adc_data(channel):
     """
-    Converts raw ADC value to voltage.
+    Calculates the average value for an ADC channel and converts it to voltage or resistance.
     
     Args:
-        adc_value (int): Raw ADC value.
+        channel (int): ADC channel number (0-5).
     
     Returns:
-        float: Calculated voltage.
+        float: Calculated voltage (for channels 0-3) or resistance (for channels 4-5).
     """
-    if adc_value < 10:
-        return 0.0
-    return round((adc_value / ADC_RESOLUTION) * VREF * VOLTAGE_MULTIPLIER, 2)
+    raw_value = read_adc(channel)
+    buffers_ma[channel].append(raw_value)  # Add raw value to moving average buffer
+    average = sum(buffers_ma[channel]) / len(buffers_ma[channel])  # Calculate average
 
-def calculate_resistance(adc_value):
-    """
-    Converts raw ADC value to resistance.
-    
-    Args:
-        adc_value (int): Raw ADC value.
-    
-    Returns:
-        float: Calculated resistance.
-    """
-    if adc_value <= 10 or adc_value >= (ADC_RESOLUTION - 10):
-        return 0.0
-    resistance = ((RESISTANCE_REFERENCE * (ADC_RESOLUTION - adc_value)) / adc_value) / 10
-    return round(resistance, 2)
-
-# LIN (Local Interconnect Network) Constants
-SYNC_BYTE = 0x55  # Synchronization byte for LIN communication
-BREAK_DURATION = 1.35e-3  # Duration of break signal in seconds (1.35ms)
-
-# PID (Parameter Identifier) Definitions
-PID_TEMPERATURE = 0x50
-PID_HUMIDITY = 0x51  # New PID for Humidity
-
-# Dictionary mapping PIDs to sensor names
-PID_DICT = {
-    PID_TEMPERATURE: 'Temperature',
-    PID_HUMIDITY: 'Humidity'
-}
-
-def send_break():
-    """
-    Sends a BREAK signal for LIN communication by setting the break condition on UART.
-    """
-    ser.break_condition = True
-    time.sleep(BREAK_DURATION)  # Hold break condition
-    ser.break_condition = False
-    time.sleep(0.0001)  # Short pause after releasing break
-
-def send_header(pid):
-    """
-    Sends SYNC + PID header to the slave device and clears the UART buffer.
-    
-    Args:
-        pid (int): Parameter Identifier to send.
-    """
-    ser.reset_input_buffer()  # Clear UART buffer before sending
-    send_break()  # Send BREAK signal
-    ser.write(bytes([SYNC_BYTE, pid]))  # Write SYNC and PID bytes
-    logger.info(f"Sent Header: SYNC=0x{SYNC_BYTE:02X}, PID=0x{pid:02X} ({PID_DICT.get(pid, 'Unknown')})")
-    time.sleep(0.1)  # Short pause for slave processing
-
-async def read_response_async(expected_data_length, pid):
-    """
-    Reads the response from the slave device asynchronously, looking for SYNC + PID and then extracting the data.
-    
-    Args:
-        expected_data_length (int): Number of bytes expected after SYNC + PID.
-        pid (int): Parameter Identifier to match in the response.
-    
-    Returns:
-        bytearray or None: The response data if valid, otherwise None.
-    """
-    expected_length = expected_data_length  # Number of data bytes expected
-    start_time = time.time()
-    buffer = bytearray()
-    sync_pid = bytes([SYNC_BYTE, pid])
-
-    while (time.time() - start_time) < 2.0:  # Timeout after 2 seconds
-        if ser.in_waiting > 0:
-            data = ser.read(ser.in_waiting)  # Read available bytes
-            buffer.extend(data)
-            logger.info(f"Received bytes: {data.hex()}")
-
-            # Search for SYNC + PID sequence in the buffer
-            index = buffer.find(sync_pid)
-            if index != -1:
-                logger.info(f"Found SYNC + PID at index {index}: {buffer[index:index+2].hex()}")
-                # Remove everything before and including SYNC + PID
-                buffer = buffer[index + 2:]
-                logger.debug(f"Filtered Buffer after SYNC + PID: {buffer.hex()}")
-
-                # Check if there are enough bytes for data and checksum
-                if len(buffer) >= expected_length:
-                    response = buffer[:expected_length]
-                    logger.info(f"Filtered Response: {response.hex()}")
-                    return response
-                else:
-                    # Wait for the remaining data
-                    while len(buffer) < expected_length and (time.time() - start_time) < 2.0:
-                        if ser.in_waiting > 0:
-                            more_data = ser.read(ser.in_waiting)
-                            buffer.extend(more_data)
-                            logger.info(f"Received bytes while waiting: {more_data.hex()}")
-                        else:
-                            await asyncio.sleep(0.01)  # Use asyncio.sleep()
-                    if len(buffer) >= expected_length:
-                        response = buffer[:expected_length]
-                        logger.info(f"Filtered Response after waiting: {response.hex()}")
-                        return response
-        else:
-            await asyncio.sleep(0.01)  # Use asyncio.sleep()
-
-    logger.info("No valid response received within timeout.")
-    return None
-
-def enhanced_checksum(data):
-    """
-    Calculates the checksum by summing all bytes, taking the lowest byte, and returning its inverse.
-    
-    Args:
-        data (list): List of integer byte values.
-    
-    Returns:
-        int: Calculated checksum byte.
-    """
-    checksum = sum(data) & 0xFF
-    return (~checksum) & 0xFF
-
-def process_response(response, pid):
-    """
-    Processes the received response, checks the checksum, and updates the latest data.
-    
-    Args:
-        response (bytearray): The response data from the slave.
-        pid (int): Parameter Identifier associated with the response.
-    """
-    if response and len(response) == 3:
-        data = response[:2]  # Extract data bytes
-        received_checksum = response[2]  # Extract checksum byte
-        calculated_checksum = enhanced_checksum([pid] + list(data))  # Calculate expected checksum
-        logger.info(f"Received Checksum: 0x{received_checksum:02X}, Calculated Checksum: 0x{calculated_checksum:02X}")
-
-        if received_checksum == calculated_checksum:
-            value = int.from_bytes(data, 'little') / 100.0  # Convert bytes to float value
-            sensor = PID_DICT.get(pid, 'Unknown')
-            if sensor == 'Temperature':
-                logger.info(f"Temperature: {value:.2f}°C")
-                latest_data["slave_sensors"]["slave_1"]["Temperature"] = value  # Update temperature
-            elif sensor == 'Humidity':
-                logger.info(f"Humidity: {value:.2f}%")
-                latest_data["slave_sensors"]["slave_1"]["Humidity"] = value  # Update humidity
-            else:
-                logger.info(f"Unknown PID {pid}: Value={value}")
-        else:
-            logger.info("Checksum mismatch.")
+    if channel < 4:
+        # Convert ADC value to voltage
+        voltage = (average / ADC_RESOLUTION) * VREF * VOLTAGE_MULTIPLIER
+        return round(voltage, 2)
     else:
-        logger.info("Invalid response length.")
+        # Convert ADC value to resistance
+        if average == 0:
+            logger.warning(f"ADC Channel {channel} average is zero, cannot calculate resistance.")
+            return 0.0
+        resistance = ((RESISTANCE_REFERENCE * (ADC_RESOLUTION - average)) / average) / 10
+        return round(resistance, 2)
 
-# -------------------- MQTT Publishing Functions --------------------
 async def publish_to_mqtt(client):
     """
     Publishes the latest sensor data to MQTT state topics asynchronously.
@@ -503,28 +487,20 @@ async def publish_mqtt_discovery(client):
 async def adc_reading_task():
     """
     Task to read and process ADC channels at defined intervals.
-    Applies EMA filtering to the ADC values.
     """
     while True:
-        start_time = time.time()
-        for channel in range(6):
-            raw_value = read_adc(channel)
-            if channel < 4:
-                # Calculate and apply EMA for voltage channels
-                voltage = calculate_voltage(raw_value)
-                filtered_voltage = apply_ema(voltage, channel, True)
-                latest_data["adc_channels"][f"channel_{channel}"]["voltage"] = filtered_voltage
-                logger.debug(f"Channel {channel} Voltage: {filtered_voltage} V")
+        for i in range(6):
+            if i < 4:
+                # Read and update voltage channels
+                voltage = process_adc_data(i)
+                latest_data["adc_channels"][f"channel_{i}"]["voltage"] = voltage
+                logger.debug(f"ADC Channel {i} Voltage: {voltage} V")
             else:
-                # Calculate and apply EMA for resistance channels
-                resistance = calculate_resistance(raw_value)
-                filtered_resistance = apply_ema(resistance, channel, False)
-                latest_data["adc_channels"][f"channel_{channel}"]["resistance"] = filtered_resistance
-                logger.debug(f"Channel {channel} Resistance: {filtered_resistance} Ω")
-        end_time = time.time()
-        processing_time = end_time - start_time
-        logger.info(f"ADC data processing took {processing_time:.4f} seconds")
-        await asyncio.sleep(ADC_UPDATE_INTERVAL)
+                # Read and update resistance channels
+                resistance = process_adc_data(i)
+                latest_data["adc_channels"][f"channel_{i}"]["resistance"] = resistance
+                logger.debug(f"ADC Channel {i} Resistance: {resistance} Ω")
+        await asyncio.sleep(ADC_UPDATE_INTERVAL)  # Wait for next ADC reading
 
 # -------------------- LIN Communication Task --------------------
 async def lin_communication_task():
@@ -532,20 +508,13 @@ async def lin_communication_task():
     Task to handle LIN communication for each PID at defined intervals.
     """
     while True:
-        start_time = time.time()
         for pid in PID_DICT.keys():
             send_header(pid)  # Send SYNC + PID header
             response = await read_response_async(3, pid)  # Async read
             if response:
                 process_response(response, pid)  # Process and update data
             await asyncio.sleep(0.1)  # Short pause between requests
-        end_time = time.time()
-        elapsed = end_time - start_time
-        sleep_time = LIN_UPDATE_INTERVAL - elapsed
-        if sleep_time > 0:
-            await asyncio.sleep(sleep_time)
-        else:
-            logger.warning("LIN communication tasks are taking longer than the defined interval.")
+        await asyncio.sleep(LIN_UPDATE_INTERVAL - 0.1 * len(PID_DICT))  # Adjust sleep to maintain overall interval
 
 # -------------------- Data Sending Task --------------------
 async def data_sending_task(client):
@@ -565,7 +534,7 @@ async def data_sending_task(client):
         # Publish Latest Data to MQTT
         await publish_to_mqtt(client)  # Async MQTT publishing
 
-        await asyncio.sleep(DATA_SEND_INTERVAL)  # Interval between each data send
+        await asyncio.sleep(2)  # Interval between each data send
 
 # -------------------- Main Processing Function --------------------
 async def process_adc_and_lin():
@@ -661,5 +630,3 @@ if __name__ == '__main__':
         spi.close()
         ser.close()
         # Note: MQTT offline status is handled in the processing loop's finally block
-
-[2024-12-14 11:25:33] [ADC, LIN & MQTT] ERROR: Unexpected error: name 'HTTP_PORT' is not defined
