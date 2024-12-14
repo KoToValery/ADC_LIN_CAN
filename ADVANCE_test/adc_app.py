@@ -8,12 +8,12 @@
 # Hardware PCB V3.0
 # Tool: Python 3
 #
-# Version: V01.01.09.2024.CIS3 - temporary 01
+# Version: V01.01.10.2024.CIS3 - updated with MA integrated into EMA
 # 1. TestSPI,ADC - work. Measurement Voltage 0-10 V, resistive 0-1000 ohm
 # 2. Test Power PI5V/4.5A - work
 # 3. Test ADC communication - work
 # 4. Test LIN communication - work
-# 5. - updated with MQTT integration
+# 5. - updated with MQTT integration and integrated Moving Average into EMA
 import os
 import time
 import json
@@ -60,6 +60,10 @@ RESISTANCE_REFERENCE = 10000  # Reference resistor value for resistance measurem
 VOLTAGE_EMA_ALPHA = 0.2
 RESISTANCE_EMA_ALPHA = 0.1
 
+# Moving Average Configuration
+VOLTAGE_MA = 30
+RESISTANCE_MA = 30
+
 # MQTT Configuration
 MQTT_BROKER = 'localhost'
 MQTT_PORT = 1883
@@ -68,10 +72,13 @@ MQTT_PASSWORD = 'mqtt_pass'
 MQTT_DISCOVERY_PREFIX = 'homeassistant'
 MQTT_CLIENT_ID = "cis3_adc_mqtt_client"
 
+# HTTP Server Configuration
+HTTP_PORT = 8080  # Define HTTP server port
+
 # Update Intervals (in seconds)
-ADC_UPDATE_INTERVAL = 0.01  # Update ADC every 0.1 seconds
-LIN_UPDATE_INTERVAL = 1.0  # Update LIN every 2 seconds (modifiable)
-DATA_SEND_INTERVAL = 1.0  # Send data to MQTT and WebSocket every 2 seconds
+ADC_UPDATE_INTERVAL = 0.01  # Update ADC every 0.01 seconds
+LIN_UPDATE_INTERVAL = 1.0  # Update LIN every 1 second (modifiable)
+DATA_SEND_INTERVAL = 1.0  # Send data to MQTT and WebSocket every 1 second
 
 # -------------------- Data Initialization --------------------
 # Initialize a dictionary to hold the latest sensor data
@@ -91,6 +98,10 @@ latest_data = {
         }
     }
 }
+
+# Initialize deque for Moving Average (MA) with max length for voltage and resistance
+ma_deques_voltage = {i: deque(maxlen=VOLTAGE_MA) for i in range(4)}
+ma_deques_resistance = {i: deque(maxlen=RESISTANCE_MA) for i in range(4, 6)}
 
 # -------------------- Quart Application Setup --------------------
 # Initialize the Quart web application
@@ -179,35 +190,46 @@ values_ema_voltage = {i: None for i in range(4)}
 values_ema_resistance = {i: None for i in range(4, 6)}
 
 # -------------------- Helper Functions --------------------
-def apply_ema(value, channel, is_voltage):
+def apply_ma_then_ema(value, channel, is_voltage):
     """
-    Applies Exponential Moving Average (EMA) filtering to the provided value.
-    
+    Applies Moving Average (MA) followed by Exponential Moving Average (EMA) to the provided value.
+
     Args:
         value (float): The current ADC value (voltage or resistance).
         channel (int): The ADC channel number.
         is_voltage (bool): Flag indicating if the value is voltage (True) or resistance (False).
-    
+
     Returns:
-        float: The filtered EMA value.
+        float: The filtered EMA value after applying MA.
     """
-    ema_values = values_ema_voltage if is_voltage else values_ema_resistance
-    alpha = VOLTAGE_EMA_ALPHA if is_voltage else RESISTANCE_EMA_ALPHA
-    if ema_values[channel] is None:
-        ema_values[channel] = value
+    if is_voltage:
+        ma_deque = ma_deques_voltage[channel]
+        ema_values = values_ema_voltage
+        alpha = VOLTAGE_EMA_ALPHA
     else:
-        ema_values[channel] = alpha * value + (1 - alpha) * ema_values[channel]
+        ma_deque = ma_deques_resistance[channel]
+        ema_values = values_ema_resistance
+        alpha = RESISTANCE_EMA_ALPHA
+
+    ma_deque.append(value)
+    ma_avg = sum(ma_deque) / len(ma_deque) if ma_deque else 0.0
+
+    if ema_values[channel] is None:
+        ema_values[channel] = ma_avg
+    else:
+        ema_values[channel] = alpha * ma_avg + (1 - alpha) * ema_values[channel]
+
     return ema_values[channel]
 
 def read_adc(channel):
     """
     Reads the raw ADC value from a specific channel via SPI.
-    
+
     Args:
         channel (int): ADC channel number (0-7).
-    
+
     Returns:
-        int: Raw ADC value or 0 if an error occurs.
+        int: Raw ADC value или 0 ако възникне грешка.
     """
     if 0 <= channel <= 7:
         cmd = [1, (8 + channel) << 4, 0]  # Command to read the specified channel
@@ -225,10 +247,10 @@ def read_adc(channel):
 def calculate_voltage(adc_value):
     """
     Converts raw ADC value to voltage.
-    
+
     Args:
         adc_value (int): Raw ADC value.
-    
+
     Returns:
         float: Calculated voltage.
     """
@@ -239,10 +261,10 @@ def calculate_voltage(adc_value):
 def calculate_resistance(adc_value):
     """
     Converts raw ADC value to resistance.
-    
+
     Args:
         adc_value (int): Raw ADC value.
-    
+
     Returns:
         float: Calculated resistance.
     """
@@ -277,7 +299,7 @@ def send_break():
 def send_header(pid):
     """
     Sends SYNC + PID header to the slave device and clears the UART buffer.
-    
+
     Args:
         pid (int): Parameter Identifier to send.
     """
@@ -290,11 +312,11 @@ def send_header(pid):
 async def read_response_async(expected_data_length, pid):
     """
     Reads the response from the slave device asynchronously, looking for SYNC + PID and then extracting the data.
-    
+
     Args:
         expected_data_length (int): Number of bytes expected after SYNC + PID.
         pid (int): Parameter Identifier to match in the response.
-    
+
     Returns:
         bytearray or None: The response data if valid, otherwise None.
     """
@@ -344,10 +366,10 @@ async def read_response_async(expected_data_length, pid):
 def enhanced_checksum(data):
     """
     Calculates the checksum by summing all bytes, taking the lowest byte, and returning its inverse.
-    
+
     Args:
         data (list): List of integer byte values.
-    
+
     Returns:
         int: Calculated checksum byte.
     """
@@ -357,7 +379,7 @@ def enhanced_checksum(data):
 def process_response(response, pid):
     """
     Processes the received response, checks the checksum, and updates the latest data.
-    
+
     Args:
         response (bytearray): The response data from the slave.
         pid (int): Parameter Identifier associated with the response.
@@ -388,7 +410,7 @@ def process_response(response, pid):
 async def publish_to_mqtt(client):
     """
     Publishes the latest sensor data to MQTT state topics asynchronously.
-    
+
     Args:
         client (aiomqtt.Client): The MQTT client instance.
     """
@@ -422,7 +444,7 @@ async def publish_to_mqtt(client):
 async def publish_mqtt_discovery(client):
     """
     Publishes MQTT discovery messages for all sensors to enable automatic discovery in Home Assistant.
-    
+
     Args:
         client (aiomqtt.Client): The MQTT client instance.
     """
@@ -503,24 +525,26 @@ async def publish_mqtt_discovery(client):
 async def adc_reading_task():
     """
     Task to read and process ADC channels at defined intervals.
-    Applies EMA filtering to the ADC values.
+    Applies MA and EMA filtering to the ADC values.
     """
     while True:
         start_time = time.time()
         for channel in range(6):
             raw_value = read_adc(channel)
             if channel < 4:
-                # Calculate and apply EMA for voltage channels
+                # Calculate voltage
                 voltage = calculate_voltage(raw_value)
-                filtered_voltage = apply_ema(voltage, channel, True)
+                # Apply MA and then EMA
+                filtered_voltage = apply_ma_then_ema(voltage, channel, True)
                 latest_data["adc_channels"][f"channel_{channel}"]["voltage"] = filtered_voltage
-                logger.debug(f"Channel {channel} Voltage: {filtered_voltage} V")
+                logger.debug(f"Channel {channel} Voltage: {filtered_voltage} V (MA + EMA)")
             else:
-                # Calculate and apply EMA for resistance channels
+                # Calculate resistance
                 resistance = calculate_resistance(raw_value)
-                filtered_resistance = apply_ema(resistance, channel, False)
+                # Apply MA and then EMA
+                filtered_resistance = apply_ma_then_ema(resistance, channel, False)
                 latest_data["adc_channels"][f"channel_{channel}"]["resistance"] = filtered_resistance
-                logger.debug(f"Channel {channel} Resistance: {filtered_resistance} Ω")
+                logger.debug(f"Channel {channel} Resistance: {filtered_resistance} Ω (MA + EMA)")
         end_time = time.time()
         processing_time = end_time - start_time
         logger.info(f"ADC data processing took {processing_time:.4f} seconds")
@@ -551,7 +575,7 @@ async def lin_communication_task():
 async def data_sending_task(client):
     """
     Task to send updated data to MQTT and WebSocket at defined intervals.
-    
+
     Args:
         client (aiomqtt.Client): The MQTT client instance.
     """
@@ -608,14 +632,14 @@ async def process_adc_and_lin():
             logger.error(f"Error publishing offline status: {e}")
 
 # -------------------- Graceful Shutdown --------------------
-async def shutdown(signal):
+async def shutdown(signal_received):
     """
     Gracefully shuts down the application on receiving termination signals.
-    
+
     Args:
-        signal: The signal received.
+        signal_received: The signal received.
     """
-    logger.info(f"Received exit signal {signal.name}...")
+    logger.info(f"Received exit signal {signal_received.name}...")
     tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
     for task in tasks:
         task.cancel()
@@ -661,4 +685,3 @@ if __name__ == '__main__':
         spi.close()
         ser.close()
         # Note: MQTT offline status is handled in the processing loop's finally block
-
