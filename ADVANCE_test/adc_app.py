@@ -16,20 +16,6 @@
 # 4. Test LIN communication - work
 # 5. - updated with MQTT integration
 
-# adc_app.py
-# Copyright 2004 - 2024
-#
-# AUTH: Kostadin Tosev
-# DATE: 2024
-#
-# Target: RPi5
-# Project CIS3
-# Hardware PCB V3.0
-# Tool: Python 3
-#
-# Version: V01.01.10.2024.CIS3 - Updated with detailed comments, optimized logging,
-#          Low-Pass Filtering, separate EMA for voltage and resistance,
-#          and configurable parameters via config.yaml
 
 import os
 import time
@@ -46,104 +32,42 @@ from datetime import datetime
 import paho.mqtt.client as mqtt
 import threading
 
-# --------------------------- Logging Configuration --------------------------- #
-
-# Configure logging to capture only errors and important system messages.
+# Configure logging
 logging.basicConfig(
-    level=logging.INFO,  # Set to INFO to capture important messages and errors
+    level=logging.DEBUG,
     format='[%(asctime)s] [%(name)s] %(levelname)s: %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
     handlers=[
-        logging.FileHandler("adc_app.log"),  # Log to file
-        logging.StreamHandler()              # Log to console
+        logging.FileHandler("adc_app.log"),
+        logging.StreamHandler()
     ]
 )
 logger = logging.getLogger('ADC, LIN & MQTT')
 
 logger.info("ADC, LIN & MQTT Advanced Add-on started.")
 
-# ------------------------------- Configuration ------------------------------- #
-
-# HTTP Server Configuration
+# Configuration
 HTTP_PORT = 8099
-
-# SPI Configuration for ADC
 SPI_BUS = 1
 SPI_DEVICE = 1
 SPI_SPEED = 1000000
 SPI_MODE = 0
 
-# ADC and Voltage Divider Configuration
-VREF = 3.3                       # Reference voltage for ADC
-ADC_RESOLUTION = 1023.0          # 10-bit ADC resolution (0-1023)
-VOLTAGE_MULTIPLIER = 3.31        # Multiplier based on voltage divider or amplifier
-RESISTANCE_REFERENCE = 10000     # Reference resistance in ohms
+VREF = 3.3
+ADC_RESOLUTION = 1023.0
+VOLTAGE_MULTIPLIER = 3.31
+RESISTANCE_REFERENCE = 10000
+MOVING_AVERAGE_WINDOW = 10
 
-# Moving Average Window Sizes (Configurable via environment variables)
-MOVING_AVERAGE_WINDOW_VOLTAGE = int(os.getenv("MOVING_AVERAGE_WINDOW_VOLTAGE", "10"))
-MOVING_AVERAGE_WINDOW_RESISTANCE = int(os.getenv("MOVING_AVERAGE_WINDOW_RESISTANCE", "10"))
+SUPERVISOR_WS_URL = os.getenv("SUPERVISOR_WS_URL", "ws://supervisor/core/websocket")
+SUPERVISOR_TOKEN = os.getenv("SUPERVISOR_TOKEN")
+INGRESS_PATH = os.getenv('INGRESS_PATH', '')
 
-# EMA Configuration (Configurable via environment variables)
-EMA_ALPHA_VOLTAGE = float(os.getenv("EMA_alpha_voltage", "0.1"))
-EMA_ALPHA_RESISTANCE = float(os.getenv("EMA_alpha_resistance", "0.1"))
-
-# Low-Pass Filter Configuration (Configurable via environment variables)
-LOW_PASS_ALPHA = float(os.getenv("LOW_PASS_alpha", "0.1"))
-
-# UART Configuration for LIN Communication
-UART_PORT = '/dev/ttyAMA2'
-UART_BAUDRATE = 9600
-
-# MQTT Configuration (Credentials and Broker Details)
-MQTT_BROKER = 'localhost'         # MQTT broker address
-MQTT_PORT = 1883                  # MQTT broker port
-MQTT_USERNAME = 'mqtt'            # MQTT username
-MQTT_PASSWORD = 'mqtt_pass'       # MQTT password
-MQTT_DISCOVERY_PREFIX = 'homeassistant'  # MQTT discovery prefix
-MQTT_CLIENT_ID = "cis3_adc_mqtt_client"  # MQTT client ID
-
-# --------------------------- Initialize Components --------------------------- #
-
-# Initialize Quart application for Web UI
-app = Quart(__name__)
-
-# Suppress Quart's default logging to prevent clutter
-quart_log = logging.getLogger('quart.app')
-quart_log.setLevel(logging.ERROR)
-
-# Determine the base directory for serving static files
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# Set to keep track of connected WebSocket clients
-clients = set()
-
-# Initialize SPI for ADC communication
-spi = spidev.SpiDev()
-try:
-    spi.open(SPI_BUS, SPI_DEVICE)
-    spi.max_speed_hz = SPI_SPEED
-    spi.mode = SPI_MODE
-    logger.info("SPI interface for ADC initialized.")
-except Exception as e:
-    logger.error(f"SPI initialization error: {e}")
-
-# Initialize UART for LIN communication
-try:
-    ser = serial.Serial(UART_PORT, UART_BAUDRATE, timeout=1)
-    logger.info(f"UART interface initialized on {UART_PORT} at {UART_BAUDRATE} baud.")
-except Exception as e:
-    logger.error(f"UART initialization error: {e}")
+if not SUPERVISOR_TOKEN:
+    logger.error("SUPERVISOR_TOKEN is not set. Exiting.")
     exit(1)
 
-# Initialize MQTT client with paho-mqtt
-mqtt_client = mqtt.Client(client_id=MQTT_CLIENT_ID, clean_session=True)
-
-# Set MQTT credentials
-mqtt_client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
-
-# --------------------------- Define PID Constants --------------------------- #
-
-# LIN Communication Constants
+# LIN Constants
 SYNC_BYTE = 0x55
 BREAK_DURATION = 1.35e-3  # 1.35ms break signal
 
@@ -151,15 +75,13 @@ BREAK_DURATION = 1.35e-3  # 1.35ms break signal
 PID_TEMPERATURE = 0x50
 PID_HUMIDITY = 0x51  # New PID for Humidity
 
-# PID Dictionary Mapping
+# PID Dictionary
 PID_DICT = {
     PID_TEMPERATURE: 'Temperature',
     PID_HUMIDITY: 'Humidity'
 }
 
-# ------------------------------- Initialize Data ------------------------------- #
-
-# Data structure to store latest readings
+# Initialize data
 latest_data = {
     "adc_channels": {
         "channel_0": {"voltage": 0.0, "unit": "V"},
@@ -177,27 +99,27 @@ latest_data = {
     }
 }
 
-# --------------------------- Define Web Routes --------------------------- #
+# Initialize Quart application
+app = Quart(__name__)
+
+# Limit Quart logs
+quart_log = logging.getLogger('quart.app')
+quart_log.setLevel(logging.ERROR)
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+clients = set()
 
 @app.route('/data')
 async def data_route():
-    """
-    Route to provide the latest sensor data in JSON format.
-    """
     return jsonify(latest_data)
 
 @app.route('/health')
 async def health():
-    """
-    Health check route.
-    """
     return '', 200
 
 @app.route('/')
 async def index():
-    """
-    Serve the index.html file.
-    """
     try:
         return await send_from_directory(BASE_DIR, 'index.html')
     except Exception as e:
@@ -206,14 +128,11 @@ async def index():
 
 @app.websocket('/ws')
 async def ws_route():
-    """
-    WebSocket route for real-time data updates.
-    """
     logger.info("New WebSocket connection established.")
     clients.add(websocket._get_current_object())
     try:
         while True:
-            await websocket.receive()  # Keep the connection open
+            await websocket.receive()
     except asyncio.CancelledError:
         pass
     except Exception as e:
@@ -222,49 +141,79 @@ async def ws_route():
         clients.remove(websocket._get_current_object())
         logger.info("WebSocket connection closed.")
 
-# --------------------------- Define Filtering Functions --------------------------- #
+# Initialize SPI
+spi = spidev.SpiDev()
+try:
+    spi.open(SPI_BUS, SPI_DEVICE)
+    spi.max_speed_hz = SPI_SPEED
+    spi.mode = SPI_MODE
+    logger.info("SPI interface for ADC initialized.")
+except Exception as e:
+    logger.error(f"SPI initialization error: {e}")
 
-# Initialize deques for Moving Average
-buffers_ma_voltage = deque(maxlen=MOVING_AVERAGE_WINDOW_VOLTAGE)
-buffers_ma_resistance = deque(maxlen=MOVING_AVERAGE_WINDOW_RESISTANCE)
+# UART Configuration
+UART_PORT = '/dev/ttyAMA2'
+UART_BAUDRATE = 9600
+try:
+    ser = serial.Serial(UART_PORT, UART_BAUDRATE, timeout=1)
+    logger.info(f"UART interface initialized on {UART_PORT} at {UART_BAUDRATE} baud.")
+except Exception as e:
+    logger.error(f"UART initialization error: {e}")
+    exit(1)
 
-# Initialize EMA values
-ema_voltage = None
-ema_resistance = None
+# MQTT Configuration
+MQTT_BROKER = 'localhost'  # Match with dashboard.py
+MQTT_PORT = 1883
+MQTT_USERNAME = 'mqtt'      # Match with dashboard.py
+MQTT_PASSWORD = 'mqtt_pass' # Match with dashboard.py
+MQTT_DISCOVERY_PREFIX = 'homeassistant'
+MQTT_CLIENT_ID = "cis3_adc_mqtt_client"
 
-# Initialize Low-Pass Filter values
-low_pass_voltage = None
-low_pass_resistance = None
+# Initialize MQTT client
+mqtt_client = mqtt.Client(client_id=MQTT_CLIENT_ID, clean_session=True)
 
-def moving_average(value, buffer):
-    """
-    Calculate the moving average for a given buffer.
-    """
-    buffer.append(value)
-    return sum(buffer) / len(buffer)
+# Set MQTT credentials
+mqtt_client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
 
-def exponential_moving_average(value, previous_ema, alpha):
-    """
-    Calculate the Exponential Moving Average (EMA).
-    """
-    if previous_ema is None:
-        return value
-    return alpha * value + (1 - alpha) * previous_ema
+def on_connect(client, userdata, flags, rc):
+    if rc == 0:
+        logger.info("Connected to MQTT Broker.")
+        client.publish("cis3/status", "online", retain=True)
+        publish_mqtt_discovery(client)
+    else:
+        logger.error(f"Failed to connect to MQTT Broker, return code {rc}")
 
-def low_pass_filter(value, previous_filtered, alpha):
-    """
-    Apply a Low-Pass Filter to the value.
-    """
-    if previous_filtered is None:
-        return value
-    return alpha * value + (1 - alpha) * previous_filtered
+def on_disconnect(client, userdata, rc):
+    logger.warning(f"Disconnected from MQTT Broker with return code {rc}")
+    if rc != 0:
+        logger.warning("Unexpected disconnection. Attempting to reconnect.")
+        try:
+            client.reconnect()
+        except Exception as e:
+            logger.error(f"Reconnection failed: {e}")
 
-# --------------------------- Define Helper Functions --------------------------- #
+# Register callback functions
+mqtt_client.on_connect = on_connect
+mqtt_client.on_disconnect = on_disconnect
+
+def mqtt_loop():
+    try:
+        mqtt_client.connect(MQTT_BROKER, MQTT_PORT, keepalive=60)
+        mqtt_client.loop_forever()
+    except Exception as e:
+        logger.error(f"MQTT loop error: {e}")
+
+# Start MQTT loop in a separate thread
+mqtt_thread = threading.Thread(target=mqtt_loop, daemon=True)
+mqtt_thread.start()
+
+# Log helper
+def log_message(message, role="MASTER"):
+    logger.info(f"[{role}] {message}")
 
 def enhanced_checksum(data):
     """
-    Calculates the checksum by summing all bytes, taking the lowest byte,
-    and returning its inverse.
+    Calculates the checksum by summing all bytes, taking the lowest byte, and returning its inverse.
     """
     checksum = sum(data) & 0xFF
     return (~checksum) & 0xFF
@@ -276,152 +225,165 @@ def send_break():
     ser.break_condition = True
     time.sleep(BREAK_DURATION)
     ser.break_condition = False
-    time.sleep(0.0001)  # Short pause after break
+    time.sleep(0.0001)
 
 def send_header(pid):
     """
-    Sends SYNC + PID header to the LIN slave and clears the UART buffer.
+    Sends SYNC + PID header to the slave and clears the UART buffer.
     """
     ser.reset_input_buffer()  # Clear UART buffer before sending
     send_break()
     ser.write(bytes([SYNC_BYTE, pid]))
-    logger.info(f"Sent Header: SYNC=0x{SYNC_BYTE:02X}, PID=0x{pid:02X} ({PID_DICT.get(pid, 'Unknown')})")
+    log_message(f"Sent Header: SYNC=0x{SYNC_BYTE:02X}, PID=0x{pid:02X} ({PID_DICT.get(pid, 'Unknown')})")
     time.sleep(0.1)  # Short pause for slave processing
 
 def read_response(expected_data_length, pid):
     """
-    Reads the response from the LIN slave, looking for SYNC + PID,
-    and then extracting the data.
+    Reads the response from the slave, looking for SYNC + PID and then extracting the data.
     """
     expected_length = expected_data_length  # 3 bytes: 2 data + 1 checksum
     start_time = time.time()
     buffer = bytearray()
     sync_pid = bytes([SYNC_BYTE, pid])
 
-    while (time.time() - start_time) < 2.0:  # 2-second timeout
+    while (time.time() - start_time) < 2.0:  # Increased timeout to 2 seconds
         if ser.in_waiting > 0:
             data = ser.read(ser.in_waiting)
             buffer.extend(data)
-            logger.debug(f"Received bytes: {data.hex()}")  # Debug log for received bytes
+            log_message(f"Received bytes: {data.hex()}", role="MASTER")
 
-            # Search for SYNC + PID in the buffer
+            # Search for SYNC + PID
             index = buffer.find(sync_pid)
             if index != -1:
-                logger.info(f"Found SYNC + PID at index {index}: {buffer[index:index+2].hex()}")
+                log_message(f"Found SYNC + PID at index {index}: {buffer[index:index+2].hex()}", role="MASTER")
                 # Remove everything before and including SYNC + PID
                 buffer = buffer[index + 2:]
-                logger.debug(f"Filtered Buffer after SYNC + PID: {buffer.hex()}")
+                log_message(f"Filtered Buffer after SYNC + PID: {buffer.hex()}", role="MASTER")
 
-                # Check if enough bytes are available for data and checksum
+                # Check if there are enough bytes for data and checksum
                 if len(buffer) >= expected_length:
                     response = buffer[:expected_length]
-                    logger.info(f"Filtered Response: {response.hex()}")
+                    log_message(f"Filtered Response: {response.hex()}", role="MASTER")
                     return response
                 else:
-                    # Wait for remaining data
+                    # Wait for the remaining data
                     while len(buffer) < expected_length and (time.time() - start_time) < 2.0:
                         if ser.in_waiting > 0:
                             more_data = ser.read(ser.in_waiting)
                             buffer.extend(more_data)
-                            logger.debug(f"Received bytes while waiting: {more_data.hex()}")
+                            log_message(f"Received bytes while waiting: {more_data.hex()}", role="MASTER")
                         else:
                             time.sleep(0.01)
                     if len(buffer) >= expected_length:
                         response = buffer[:expected_length]
-                        logger.info(f"Filtered Response after waiting: {response.hex()}")
+                        log_message(f"Filtered Response after waiting: {response.hex()}", role="MASTER")
                         return response
         else:
             time.sleep(0.01)
 
-    logger.error("No valid response received within timeout.")
+    log_message("No valid response received within timeout.", role="MASTER")
     return None
 
 def process_response(response, pid):
     """
-    Processes the received response, checks the checksum,
-    and updates the data.
+    Processes the received response, checks the checksum, and updates the data.
     """
     if response and len(response) == 3:
         data = response[:2]
         received_checksum = response[2]
         calculated_checksum = enhanced_checksum([pid] + list(data))
-        logger.info(f"Received Checksum: 0x{received_checksum:02X}, Calculated Checksum: 0x{calculated_checksum:02X}")
+        log_message(f"Received Checksum: 0x{received_checksum:02X}, Calculated Checksum: 0x{calculated_checksum:02X}", role="MASTER")
 
         if received_checksum == calculated_checksum:
             value = int.from_bytes(data, 'little') / 100.0
             sensor = PID_DICT.get(pid, 'Unknown')
             if sensor == 'Temperature':
-                logger.info(f"Temperature: {value:.2f}°C")
+                log_message(f"Temperature: {value:.2f}°C", role="MASTER")
                 latest_data["slave_sensors"]["slave_1"]["Temperature"] = value
             elif sensor == 'Humidity':
-                logger.info(f"Humidity: {value:.2f}%")
+                log_message(f"Humidity: {value:.2f}%", role="MASTER")
                 latest_data["slave_sensors"]["slave_1"]["Humidity"] = value
             else:
-                logger.warning(f"Unknown PID {pid}: Value={value}")
+                log_message(f"Unknown PID {pid}: Value={value}", role="MASTER")
         else:
-            logger.error("Checksum mismatch.")
+            log_message("Checksum mismatch.", role="MASTER")
     else:
-        logger.error("Invalid response length.")
+        log_message("Invalid response length.", role="MASTER")
 
-# --------------------------- Define MQTT Callback Functions --------------------------- #
+buffers_ma = {i: deque(maxlen=MOVING_AVERAGE_WINDOW) for i in range(6)}
 
-def on_connect(client, userdata, flags, rc):
+def read_adc(channel):
     """
-    Callback function for when the MQTT client connects to the broker.
+    Reads the raw ADC value from a specific channel.
     """
-    if rc == 0:
-        logger.info("Connected to MQTT Broker.")
-        client.publish("cis3/status", "online", retain=True)
-        publish_mqtt_discovery(client)
-    else:
-        logger.error(f"Failed to connect to MQTT Broker, return code {rc}")
-
-def on_disconnect(client, userdata, rc):
-    """
-    Callback function for when the MQTT client disconnects from the broker.
-    """
-    logger.error(f"Disconnected from MQTT Broker with return code {rc}")
-    if rc != 0:
-        logger.warning("Unexpected disconnection. Attempting to reconnect.")
+    if 0 <= channel <= 7:
+        cmd = [1, (8 + channel) << 4, 0]
         try:
-            client.reconnect()
+            adc = spi.xfer2(cmd)
+            value = ((adc[1] & 3) << 8) + adc[2]
+            logger.debug(f"ADC Channel {channel} raw value: {value}")
+            return value
         except Exception as e:
-            logger.error(f"Reconnection failed: {e}")
+            logger.error(f"Error reading ADC channel {channel}: {e}")
+            return 0
+    logger.warning(f"Invalid ADC channel: {channel}")
+    return 0
 
-# --------------------------- MQTT Initialization and Loop --------------------------- #
-
-# Register MQTT callback functions
-mqtt_client.on_connect = on_connect
-mqtt_client.on_disconnect = on_disconnect
-
-def mqtt_loop():
+def process_adc_data(channel):
     """
-    Runs the MQTT client loop in a separate thread.
+    Calculates the average value for an ADC channel and converts it to voltage or resistance.
     """
-    try:
-        mqtt_client.connect(MQTT_BROKER, MQTT_PORT, keepalive=60)
-        mqtt_client.loop_forever()
-    except Exception as e:
-        logger.error(f"MQTT loop error: {e}")
+    raw_value = read_adc(channel)
+    buffers_ma[channel].append(raw_value)
+    average = sum(buffers_ma[channel]) / len(buffers_ma[channel])
+    if channel < 4:
+        voltage = (average / ADC_RESOLUTION) * VREF * VOLTAGE_MULTIPLIER
+        return round(voltage, 2)
+    else:
+        if average == 0:
+            logger.warning(f"ADC Channel {channel} average is zero, cannot calculate resistance.")
+            return 0.0
+        resistance = ((RESISTANCE_REFERENCE * (ADC_RESOLUTION - average)) / average) / 10
+        return round(resistance, 2)
 
-# Start MQTT loop in a separate daemon thread
-mqtt_thread = threading.Thread(target=mqtt_loop, daemon=True)
-mqtt_thread.start()
+def publish_to_mqtt():
+    """
+    Publishes the latest data to MQTT state topics.
+    """
+    # ADC Channels
+    for i in range(6):
+        channel = f"channel_{i}"
+        adc_data = latest_data["adc_channels"][channel]
+        if i < 4:
+            # Voltage
+            state_topic = f"cis3/{channel}/voltage"
+            payload = adc_data["voltage"]
+            mqtt_client.publish(state_topic, str(payload))
+            logger.debug(f"Published {channel} Voltage: {payload} V to {state_topic}")
+        else:
+            # Resistance
+            state_topic = f"cis3/{channel}/resistance"
+            payload = adc_data["resistance"]
+            mqtt_client.publish(state_topic, str(payload))
+            logger.debug(f"Published {channel} Resistance: {payload} Ω to {state_topic}")
 
-# --------------------------- MQTT Discovery Function --------------------------- #
+    # Slave Sensors
+    slave = latest_data["slave_sensors"]["slave_1"]
+    for sensor, value in slave.items():
+        state_topic = f"cis3/slave_1/{sensor.lower()}"
+        mqtt_client.publish(state_topic, str(value))
+        logger.debug(f"Published Slave_1 {sensor}: {value} to {state_topic}")
 
 def publish_mqtt_discovery(client):
     """
-    Publishes MQTT discovery messages for all sensors to enable auto-discovery in Home Assistant.
+    Publishes MQTT discovery messages for all sensors.
     """
-    # List to hold all sensor configurations
     sensors = []
 
-    # ADC Channels Discovery
+    # ADC Channels
     for i in range(6):
         channel = f"channel_{i}"
         if i < 4:
-            # Voltage Sensors
             sensor_type = "voltage"
             unit = "V"
             state_topic = f"cis3/{channel}/voltage"
@@ -431,17 +393,15 @@ def publish_mqtt_discovery(client):
             icon = "mdi:flash"
             value_template = "{{ value }}"
         else:
-            # Resistance Sensors
             sensor_type = "resistance"
             unit = "Ω"
             state_topic = f"cis3/{channel}/resistance"
             unique_id = f"cis3_{channel}_resistance"
             name = f"CIS3 Channel {i} Resistance"
-            device_class = "resistance"  # Ensure Home Assistant recognizes this
+            device_class = "resistance"  # Changed to 'resistance' device class
             icon = "mdi:water-percent"
             value_template = "{{ value }}"
 
-        # Sensor Configuration Dictionary
         sensor = {
             "name": name,
             "unique_id": unique_id,
@@ -460,9 +420,11 @@ def publish_mqtt_discovery(client):
                 "manufacturer": "biCOMM Design Ltd"
             }
         }
-        sensors.append(sensor)
+        discovery_topic = f"{MQTT_DISCOVERY_PREFIX}/sensor/{sensor['unique_id']}/config"
+        client.publish(discovery_topic, json.dumps(sensor), retain=True)
+        logger.info(f"Published MQTT discovery for {sensor['name']} to {discovery_topic}")
 
-    # Slave Sensors Discovery
+    # Slave Sensors
     for pid, sensor_name in PID_DICT.items():
         sensor = {
             "name": f"CIS3 Slave 1 {sensor_name}",
@@ -482,145 +444,60 @@ def publish_mqtt_discovery(client):
                 "manufacturer": "biCOMM Design Ltd"
             }
         }
-        sensors.append(sensor)
-
-    # Publish discovery messages for each sensor
-    for sensor in sensors:
         discovery_topic = f"{MQTT_DISCOVERY_PREFIX}/sensor/{sensor['unique_id']}/config"
         client.publish(discovery_topic, json.dumps(sensor), retain=True)
         logger.info(f"Published MQTT discovery for {sensor['name']} to {discovery_topic}")
-
-# --------------------------- ADC Reading and Processing --------------------------- #
 
 async def process_adc_and_lin():
     """
     Main loop for LIN and ADC communication.
     """
-    global ema_voltage, ema_resistance, low_pass_voltage, low_pass_resistance
-
     while True:
-        # Process ADC Channels
+        # Process ADC
         for i in range(6):
-            channel = f"channel_{i}"
-            raw_adc = read_adc(i)
-
             if i < 4:
-                # Voltage Channels
-                # Apply Moving Average
-                avg_voltage = moving_average(raw_adc, buffers_ma_voltage)
-
-                # Apply Low-Pass Filter
-                low_pass_voltage = low_pass_filter(avg_voltage, low_pass_voltage, LOW_PASS_ALPHA)
-
-                # Apply Exponential Moving Average
-                ema_voltage = exponential_moving_average(low_pass_voltage, ema_voltage, EMA_ALPHA_VOLTAGE)
-
-                # Calculate Voltage
-                voltage = (ema_voltage / ADC_RESOLUTION) * VREF * VOLTAGE_MULTIPLIER
-                voltage = round(voltage, 2)
-
-                # Update Latest Data
-                latest_data["adc_channels"][channel]["voltage"] = voltage
-
+                voltage = process_adc_data(i)
+                latest_data["adc_channels"][f"channel_{i}"]["voltage"] = voltage
+                logger.debug(f"ADC Channel {i} Voltage: {voltage} V")
             else:
-                # Resistance Channels
-                # Apply Moving Average
-                avg_resistance = moving_average(raw_adc, buffers_ma_resistance)
+                resistance = process_adc_data(i)
+                latest_data["adc_channels"][f"channel_{i}"]["resistance"] = resistance
+                logger.debug(f"ADC Channel {i} Resistance: {resistance} Ω")
 
-                # Apply Low-Pass Filter
-                low_pass_resistance = low_pass_filter(avg_resistance, low_pass_resistance, LOW_PASS_ALPHA)
-
-                # Apply Exponential Moving Average
-                ema_resistance = exponential_moving_average(low_pass_resistance, ema_resistance, EMA_ALPHA_RESISTANCE)
-
-                # Prevent division by zero
-                if ema_resistance == 0:
-                    resistance = 0.0
-                else:
-                    # Calculate Resistance based on voltage divider formula
-                    resistance = ((RESISTANCE_REFERENCE * (ADC_RESOLUTION - ema_resistance)) / ema_resistance) / 10
-                    resistance = round(resistance, 2)
-
-                # Update Latest Data
-                latest_data["adc_channels"][channel]["resistance"] = resistance
-
-        # Process LIN Communication for each PID
+        # Process LIN
         for pid in PID_DICT.keys():
             send_header(pid)
             response = read_response(3, pid)
             if response:
                 process_response(response, pid)
-            await asyncio.sleep(0.1)  # Short pause between PID requests
+            await asyncio.sleep(0.1)  # Short pause between requests
 
-        # Send data to connected WebSocket clients
+        # Send data to WebSocket clients
         if clients:
             data_to_send = json.dumps(latest_data)
             await asyncio.gather(*(client.send(data_to_send) for client in clients))
-            logger.info("Sent updated data to WebSocket clients.")
+            logger.debug("Sent updated data to WebSocket clients.")
 
         # Publish data to MQTT
         publish_to_mqtt()
 
-        # Wait for the next cycle
-        await asyncio.sleep(2)  # Update interval in seconds
+        await asyncio.sleep(2)  # Interval between loops
 
-# --------------------------- Define MQTT Publishing Function --------------------------- #
-
-def publish_to_mqtt():
+async def main():
     """
-    Publishes the latest data to MQTT state topics.
-    """
-    # Publish ADC Voltage and Resistance
-    for i in range(6):
-        channel = f"channel_{i}"
-        adc_data = latest_data["adc_channels"][channel]
-        if i < 4:
-            # Voltage Topic
-            state_topic = f"cis3/{channel}/voltage"
-            payload = adc_data["voltage"]
-            mqtt_client.publish(state_topic, str(payload))
-            logger.info(f"Published {channel} Voltage: {payload} V to {state_topic}")
-        else:
-            # Resistance Topic
-            state_topic = f"cis3/{channel}/resistance"
-            payload = adc_data["resistance"]
-            mqtt_client.publish(state_topic, str(payload))
-            logger.info(f"Published {channel} Resistance: {payload} Ω to {state_topic}")
-
-    # Publish Slave Sensors (Temperature and Humidity)
-    slave = latest_data["slave_sensors"]["slave_1"]
-    for sensor, value in slave.items():
-        if value is not None:
-            state_topic = f"cis3/slave_1/{sensor.lower()}"
-            mqtt_client.publish(state_topic, str(value))
-            logger.info(f"Published Slave_1 {sensor}: {value} to {state_topic}")
-        else:
-            logger.error(f"Slave_1 {sensor} value is None, skipping MQTT publish.")
-
-# --------------------------- Define Quart HTTP Server --------------------------- #
-
-async def start_quart():
-    """
-    Starts the Quart HTTP server.
+    Starts the Quart HTTP server and ADC & LIN processing.
     """
     config = Config()
     config.bind = [f"0.0.0.0:{HTTP_PORT}"]
     logger.info(f"Starting Quart HTTP server on port {HTTP_PORT}")
-    await serve(app, config)
+    quart_task = asyncio.create_task(serve(app, config))
     logger.info("Quart HTTP server started.")
-
-# --------------------------- Main Function --------------------------- #
-
-async def main():
-    """
-    Main function to start the Quart server and process ADC & LIN data.
-    """
+    adc_lin_task = asyncio.create_task(process_adc_and_lin())
+    logger.info("ADC and LIN processing task started.")
     await asyncio.gather(
-        start_quart(),
-        process_adc_and_lin()
+        quart_task,
+        adc_lin_task
     )
-
-# --------------------------- Entry Point --------------------------- #
 
 if __name__ == '__main__':
     try:
@@ -630,10 +507,8 @@ if __name__ == '__main__':
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
     finally:
-        # Close SPI and UART interfaces
         spi.close()
         ser.close()
-        # Publish offline status and disconnect MQTT
         mqtt_client.publish("cis3/status", "offline", retain=True)
         mqtt_client.disconnect()
         logger.info("ADC, LIN & MQTT Advanced Add-on has been shut down.")
