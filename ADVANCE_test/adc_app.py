@@ -77,9 +77,9 @@ MQTT_CLIENT_ID = "cis3_adc_mqtt_client"
 HTTP_PORT = 8080  # Define HTTP server port
 
 # Update Intervals (in seconds)
-ADC_UPDATE_INTERVAL = 0.01  # Update ADC every 0.01 seconds
-LIN_UPDATE_INTERVAL = 1.0  # Update LIN every 1 second (modifiable)
-DATA_SEND_INTERVAL = 1.0  # Send data to MQTT and WebSocket every 1 second
+ADC_UPDATE_INTERVAL = 0.02  # Update ADC every 0.01 seconds
+LIN_UPDATE_INTERVAL = 2.0  # Update LIN every 1 second (modifiable)
+DATA_SEND_INTERVAL = 2.0  # Send data to MQTT and WebSocket every 1 second
 
 # -------------------- Data Initialization --------------------
 # Initialize a dictionary to hold the latest sensor data
