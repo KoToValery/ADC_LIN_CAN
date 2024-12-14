@@ -661,5 +661,5 @@ if __name__ == '__main__':
         spi.close()
         ser.close()
         # Note: MQTT offline status is handled in the processing loop's finally block
-[2024-12-14 11:25:33] [ADC, LIN & MQTT] INFO: UART interface initialized on /dev/ttyAMA2 at 9600 baud.
+
 [2024-12-14 11:25:33] [ADC, LIN & MQTT] ERROR: Unexpected error: name 'HTTP_PORT' is not defined
