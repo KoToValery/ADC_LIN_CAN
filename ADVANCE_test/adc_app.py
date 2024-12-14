@@ -8,12 +8,13 @@
 # Hardware PCB V3.0
 # Tool: Python 3
 #
-# Version: V01.01.10.2024.CIS3 - updated with MA integrated into EMA
+# Version: V01.01.10.2024.CIS3 - updated with MA integrated into EMA and optimized logging
 # 1. TestSPI,ADC - work. Measurement Voltage 0-10 V, resistive 0-1000 ohm
 # 2. Test Power PI5V/4.5A - work
 # 3. Test ADC communication - work
 # 4. Test LIN communication - work
 # 5. - updated with MQTT integration and integrated Moving Average into EMA
+
 import os
 import time
 import json
@@ -31,7 +32,7 @@ import signal
 
 # -------------------- Logging Configuration --------------------
 logging.basicConfig(
-    level=logging.INFO,  # Set appropriate logging level
+    level=logging.INFO,  # Set to INFO to capture important logs
     format='[%(asctime)s] [%(name)s] %(levelname)s: %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
     handlers=[
@@ -57,11 +58,11 @@ VOLTAGE_MULTIPLIER = 3.31  # Multiplier for voltage measurement
 RESISTANCE_REFERENCE = 10000  # Reference resistor value for resistance measurement
 
 # EMA Configuration
-VOLTAGE_EMA_ALPHA = 0.2
+VOLTAGE_EMA_ALPHA = 0.1
 RESISTANCE_EMA_ALPHA = 0.1
 
 # Moving Average Configuration
-VOLTAGE_MA = 30
+VOLTAGE_MA = 10
 RESISTANCE_MA = 30
 
 # MQTT Configuration
@@ -84,12 +85,12 @@ DATA_SEND_INTERVAL = 1.0  # Send data to MQTT and WebSocket every 1 second
 # Initialize a dictionary to hold the latest sensor data
 latest_data = {
     "adc_channels": {
-        "channel_0": {"voltage": 0.0, "unit": "V"},
-        "channel_1": {"voltage": 0.0, "unit": "V"},
-        "channel_2": {"voltage": 0.0, "unit": "V"},
-        "channel_3": {"voltage": 0.0, "unit": "V"},
-        "channel_4": {"resistance": 0.0, "unit": "Ω"},
-        "channel_5": {"resistance": 0.0, "unit": "Ω"}
+        "channel_0": {"voltage": 0.00, "unit": "V"},
+        "channel_1": {"voltage": 0.00, "unit": "V"},
+        "channel_2": {"voltage": 0.00, "unit": "V"},
+        "channel_3": {"voltage": 0.00, "unit": "V"},
+        "channel_4": {"resistance": 0, "unit": "Ω"},
+        "channel_5": {"resistance": 0, "unit": "Ω"}
     },
     "slave_sensors": {
         "slave_1": {
@@ -107,9 +108,9 @@ ma_deques_resistance = {i: deque(maxlen=RESISTANCE_MA) for i in range(4, 6)}
 # Initialize the Quart web application
 app = Quart(__name__)
 
-# Limit Quart logs to ERROR level to reduce verbosity
+# Limit Quart logs to WARNING level to reduce verbosity
 quart_log = logging.getLogger('quart.app')
-quart_log.setLevel(logging.ERROR)
+quart_log.setLevel(logging.WARNING)
 
 # Determine the base directory for serving files
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -219,7 +220,10 @@ def apply_ma_then_ema(value, channel, is_voltage):
     else:
         ema_values[channel] = alpha * ma_avg + (1 - alpha) * ema_values[channel]
 
-    return ema_values[channel]
+    if is_voltage:
+        return round(ema_values[channel], 2)  # Voltage rounded to two decimals
+    else:
+        return int(round(ema_values[channel]))  # Resistance as integer
 
 def read_adc(channel):
     """
@@ -229,14 +233,13 @@ def read_adc(channel):
         channel (int): ADC channel number (0-7).
 
     Returns:
-        int: Raw ADC value или 0 ако възникне грешка.
+        int: Raw ADC value or 0 if an error occurs.
     """
     if 0 <= channel <= 7:
         cmd = [1, (8 + channel) << 4, 0]  # Command to read the specified channel
         try:
             adc = spi.xfer2(cmd)  # Perform SPI transfer
             value = ((adc[1] & 3) << 8) + adc[2]  # Combine bytes to get the ADC value
-            logger.debug(f"ADC Channel {channel} raw value: {value}")
             return value
         except Exception as e:
             logger.error(f"Error reading ADC channel {channel}: {e}")
@@ -256,7 +259,7 @@ def calculate_voltage(adc_value):
     """
     if adc_value < 10:
         return 0.0
-    return round((adc_value / ADC_RESOLUTION) * VREF * VOLTAGE_MULTIPLIER, 2)
+    return (adc_value / ADC_RESOLUTION) * VREF * VOLTAGE_MULTIPLIER
 
 def calculate_resistance(adc_value):
     """
@@ -271,7 +274,7 @@ def calculate_resistance(adc_value):
     if adc_value <= 10 or adc_value >= (ADC_RESOLUTION - 10):
         return 0.0
     resistance = ((RESISTANCE_REFERENCE * (ADC_RESOLUTION - adc_value)) / adc_value) / 10
-    return round(resistance, 2)
+    return resistance
 
 # LIN (Local Interconnect Network) Constants
 SYNC_BYTE = 0x55  # Synchronization byte for LIN communication
@@ -329,12 +332,12 @@ async def read_response_async(expected_data_length, pid):
         if ser.in_waiting > 0:
             data = ser.read(ser.in_waiting)  # Read available bytes
             buffer.extend(data)
-            logger.info(f"Received bytes: {data.hex()}")
+            logger.debug(f"Received bytes: {data.hex()}")  # Changed from INFO to DEBUG
 
             # Search for SYNC + PID sequence in the buffer
             index = buffer.find(sync_pid)
             if index != -1:
-                logger.info(f"Found SYNC + PID at index {index}: {buffer[index:index+2].hex()}")
+                logger.debug(f"Found SYNC + PID at index {index}: {buffer[index:index+2].hex()}")  # Changed to DEBUG
                 # Remove everything before and including SYNC + PID
                 buffer = buffer[index + 2:]
                 logger.debug(f"Filtered Buffer after SYNC + PID: {buffer.hex()}")
@@ -342,7 +345,7 @@ async def read_response_async(expected_data_length, pid):
                 # Check if there are enough bytes for data and checksum
                 if len(buffer) >= expected_length:
                     response = buffer[:expected_length]
-                    logger.info(f"Filtered Response: {response.hex()}")
+                    logger.debug(f"Filtered Response: {response.hex()}")  # Changed to DEBUG
                     return response
                 else:
                     # Wait for the remaining data
@@ -350,17 +353,17 @@ async def read_response_async(expected_data_length, pid):
                         if ser.in_waiting > 0:
                             more_data = ser.read(ser.in_waiting)
                             buffer.extend(more_data)
-                            logger.info(f"Received bytes while waiting: {more_data.hex()}")
+                            logger.debug(f"Received bytes while waiting: {more_data.hex()}")  # Changed to DEBUG
                         else:
                             await asyncio.sleep(0.01)  # Use asyncio.sleep()
                     if len(buffer) >= expected_length:
                         response = buffer[:expected_length]
-                        logger.info(f"Filtered Response after waiting: {response.hex()}")
+                        logger.debug(f"Filtered Response after waiting: {response.hex()}")  # Changed to DEBUG
                         return response
         else:
             await asyncio.sleep(0.01)  # Use asyncio.sleep()
 
-    logger.info("No valid response received within timeout.")
+    logger.debug("No valid response received within timeout.")  # Changed to DEBUG
     return None
 
 def enhanced_checksum(data):
@@ -388,23 +391,25 @@ def process_response(response, pid):
         data = response[:2]  # Extract data bytes
         received_checksum = response[2]  # Extract checksum byte
         calculated_checksum = enhanced_checksum([pid] + list(data))  # Calculate expected checksum
-        logger.info(f"Received Checksum: 0x{received_checksum:02X}, Calculated Checksum: 0x{calculated_checksum:02X}")
+        logger.debug(f"Received Checksum: 0x{received_checksum:02X}, Calculated Checksum: 0x{calculated_checksum:02X}")  # Changed to DEBUG
 
         if received_checksum == calculated_checksum:
             value = int.from_bytes(data, 'little') / 100.0  # Convert bytes to float value
             sensor = PID_DICT.get(pid, 'Unknown')
             if sensor == 'Temperature':
+                value = round(value, 2)  # Round temperature to two decimals
                 logger.info(f"Temperature: {value:.2f}°C")
                 latest_data["slave_sensors"]["slave_1"]["Temperature"] = value  # Update temperature
             elif sensor == 'Humidity':
+                value = round(value, 2)  # Round humidity to two decimals
                 logger.info(f"Humidity: {value:.2f}%")
                 latest_data["slave_sensors"]["slave_1"]["Humidity"] = value  # Update humidity
             else:
-                logger.info(f"Unknown PID {pid}: Value={value}")
+                logger.debug(f"Unknown PID {pid}: Value={value}")  # Changed to DEBUG
         else:
-            logger.info("Checksum mismatch.")
+            logger.warning("Checksum mismatch.")  # Changed to WARNING
     else:
-        logger.info("Invalid response length.")
+        logger.warning("Invalid response length.")  # Changed to WARNING
 
 # -------------------- MQTT Publishing Functions --------------------
 async def publish_to_mqtt(client):
@@ -547,7 +552,7 @@ async def adc_reading_task():
                 logger.debug(f"Channel {channel} Resistance: {filtered_resistance} Ω (MA + EMA)")
         end_time = time.time()
         processing_time = end_time - start_time
-        logger.info(f"ADC data processing took {processing_time:.4f} seconds")
+        logger.debug(f"ADC data processing took {processing_time:.4f} seconds")  # Changed to DEBUG
         await asyncio.sleep(ADC_UPDATE_INTERVAL)
 
 # -------------------- LIN Communication Task --------------------
