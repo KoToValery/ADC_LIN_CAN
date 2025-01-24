@@ -1,5 +1,5 @@
 name: "CAN_test"
-version: "1.0.4"
+version: "1.0.5"
 slug: "cis3"
 description: "Add-on for monitoring ADC and MQTT broker "
 arch:
@@ -11,7 +11,7 @@ arch:
 startup: "services"
 ingress: true
 panel_icon: mdi:chip
-panel_title: "advanced ADC & LIN"
+panel_title: " ADC-LIN-CAN"
 ingress_port: 8099
 ports:
   8765/tcp: 8765  # WebSocket 
