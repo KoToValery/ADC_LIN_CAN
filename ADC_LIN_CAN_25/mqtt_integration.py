@@ -7,7 +7,7 @@ import threading
 import paho.mqtt.client as mqtt
 
 from logger_config import logger
-from py_configuration import (MQTT_BROKER, MQTT_PORT, MQTT_USERNAME, MQTT_PASSWORD,
+from config import (MQTT_BROKER, MQTT_PORT, MQTT_USERNAME, MQTT_PASSWORD,
                     MQTT_DISCOVERY_PREFIX, MQTT_CLIENT_ID)
 from data_structures import latest_data
 
