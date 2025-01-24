@@ -1,13 +1,19 @@
 # config.py
-# Конфигурационни константи
+# Тук се съхраняват всички конфигурационни константи и параметри.
+
+import os
+
+# ============================
+# Configuration Parameters
+# ============================
 
 # HTTP Server Configuration
 HTTP_PORT = 8099
 
-# SPI Configuration
+# SPI (ADC) Configuration
 SPI_BUS = 1
 SPI_DEVICE = 1
-SPI_SPEED_HZ = 1_000_000
+SPI_SPEED_HZ = 1_000_000  # 1 MHz
 SPI_MODE = 0
 
 # ADC Constants
@@ -16,20 +22,47 @@ ADC_RESOLUTION = 1023.0
 VOLTAGE_MULTIPLIER = 3.31
 RESISTANCE_REFERENCE = 10_000  # Ohms
 
-# Intervals (seconds)
-ADC_INTERVAL = 0.1
-LIN_INTERVAL = 2
-MQTT_INTERVAL = 1
-WS_INTERVAL = 1
+# Task Intervals (in seconds)
+ADC_INTERVAL = 0.1     # ADC readings every 0.1s
+LIN_INTERVAL = 2       # LIN communication every 2s
+MQTT_INTERVAL = 1      # MQTT publishing every 1s
+WS_INTERVAL = 1        # WebSocket broadcasting every 1s
 
-# Voltage Threshold
-VOLTAGE_THRESHOLD = 0.02
+# Voltage Threshold to Eliminate Minor Noise
+VOLTAGE_THRESHOLD = 0.02  # Volts
 
-# UART Configuration
-UART_PORT = '/dev/ttyAMA2'
-UART_BAUDRATE = 9600
+# Environment Variables for Supervisor
+SUPERVISOR_WS_URL = os.getenv("SUPERVISOR_WS_URL", "ws://supervisor/core/websocket")
+SUPERVISOR_TOKEN = os.getenv("SUPERVISOR_TOKEN")
+INGRESS_PATH = os.getenv('INGRESS_PATH', '')
 
+if not SUPERVISOR_TOKEN:
+    # Тук се проверява дали има токен
+    import logging
+    logger = logging.getLogger('ADC, LIN & MQTT')
+    logger.error("SUPERVISOR_TOKEN is not set. Exiting.")
+    exit(1)
+
+# ============================
+# LIN Communication Constants
+# ============================
+
+SYNC_BYTE = 0x55
+BREAK_DURATION = 1.35e-3  # 1.35 milliseconds
+
+# PID Definitions
+PID_TEMPERATURE = 0x50
+PID_HUMIDITY = 0x51  # New PID for Humidity
+
+PID_DICT = {
+    PID_TEMPERATURE: 'Temperature',
+    PID_HUMIDITY: 'Humidity'
+}
+
+# ============================
 # MQTT Configuration
+# ============================
+
 MQTT_BROKER = 'localhost'
 MQTT_PORT = 1883
 MQTT_USERNAME = 'mqtt'
@@ -37,14 +70,5 @@ MQTT_PASSWORD = 'mqtt_pass'
 MQTT_DISCOVERY_PREFIX = 'homeassistant'
 MQTT_CLIENT_ID = "cis3_adc_mqtt_client"
 
-# LIN Protocol Constants
-SYNC_BYTE = 0x55
-BREAK_DURATION = 1.35e-3
-
-PID_TEMPERATURE = 0x50
-PID_HUMIDITY = 0x51
-
-PID_DICT = {
-    PID_TEMPERATURE: 'Temperature',
-    PID_HUMIDITY: 'Humidity'
-}
+UART_PORT = '/dev/ttyAMA2'
+UART_BAUDRATE = 9600
