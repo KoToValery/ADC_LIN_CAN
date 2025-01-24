@@ -16,8 +16,8 @@ async def main():
     """
     from py_configuration import HTTP_PORT
 
-    config = Config()
-    config.bind = [f"0.0.0.0:{HTTP_PORT}"]  # Bind to all interfaces on specified port
+    py_configuration = Config()
+    py_configuration.bind = [f"0.0.0.0:{HTTP_PORT}"]  # Bind to all interfaces on specified port
     logger.info(f"Starting Quart HTTP server on port {HTTP_PORT}")
     
     # Създаваме асинхронни задачи
