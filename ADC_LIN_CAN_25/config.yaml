@@ -1,7 +1,7 @@
-name: "ADC & LIN_CAN"
-version: "1.0.0.0"
-slug: "CAN"
-description: "Add-on for visualizing ADC and LIN_CAN communication with automatic HA discovery"
+name: "ADC"
+version: "0.0.0.1"
+slug: "adc"
+description: "Add-on for monitoring ADC and MQTT broker "
 arch:
   - armhf
   - armv7
@@ -9,27 +9,13 @@ arch:
   - amd64
   - i386
 startup: "services"
-ingress: true
-panel_icon: mdi:chip
-panel_title: "ADC & LIN_CAN"
-ingress_port: 8099
-ports:
-  8765/tcp: 8765  # WebSocket 
-homeassistant_api: true
 host_network: true
 map:
   - spi
   - config
   - dev
-options:
-  mqtt_user: "mqtt"     
-  mqtt_pass: "mqtt_pass"       
-schema:
-  mqtt_user: str
-  mqtt_pass: str
-environment:
-  MQTT_USER: "${mqtt_user}"
-  MQTT_PASS: "${mqtt_pass}"
+ports:
+  8091/tcp: 8091  
 devices:
   - /dev/spidev1.1:/dev/spidev1.1
   - /dev/spidev1.0:/dev/spidev1.0
