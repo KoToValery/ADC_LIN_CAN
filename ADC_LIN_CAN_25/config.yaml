@@ -1,6 +1,6 @@
 name: "ADC & LIN_CAN"
 version: "1.0.0.0"
-slug: "adc_lin_can"
+slug: "adc-lin-can"
 description: "Add-on for visualizing ADC and LIN_CAN communication with automatic HA discovery"
 arch:
   - armhf
