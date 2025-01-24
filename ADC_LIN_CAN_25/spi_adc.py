@@ -1,14 +1,13 @@
 # spi_adc.py
-# Работа със SPI (MCP3008 ADC)
+# Работа с SPI (ADC), включително инициализация и функции за четене.
 
 import spidev
-from logger_config import logger
-from main import (
-    SPI_BUS, SPI_DEVICE, SPI_SPEED_HZ, SPI_MODE,
-    VREF, ADC_RESOLUTION, VOLTAGE_MULTIPLIER, RESISTANCE_REFERENCE
-)
+import logging
 
-# Инициализация на SPI
+from logger_config import logger
+from config import SPI_BUS, SPI_DEVICE, SPI_SPEED_HZ, SPI_MODE, VREF, ADC_RESOLUTION, VOLTAGE_MULTIPLIER, RESISTANCE_REFERENCE
+
+# Инициализираме SPI
 spi = spidev.SpiDev()
 try:
     spi.open(SPI_BUS, SPI_DEVICE)
@@ -18,13 +17,21 @@ try:
 except Exception as e:
     logger.error(f"SPI initialization error: {e}")
 
-def read_adc(channel: int) -> int:
-    """Чете сурова стойност от MCP3008 ADC."""
+def read_adc(channel):
+    """
+    Reads the raw ADC value from a specific channel using SPI.
+    
+    Args:
+        channel (int): ADC channel number (0-7).
+    
+    Returns:
+        int: Raw ADC value.
+    """
     if 0 <= channel <= 7:
-        cmd = [1, (8 + channel) << 4, 0]
+        cmd = [1, (8 + channel) << 4, 0]  # Command format for MCP3008
         try:
             adc = spi.xfer2(cmd)
-            value = ((adc[1] & 3) << 8) + adc[2]
+            value = ((adc[1] & 3) << 8) + adc[2]  # Combine bytes to get raw value
             return value
         except Exception as e:
             logger.error(f"Error reading ADC channel {channel}: {e}")
@@ -32,12 +39,28 @@ def read_adc(channel: int) -> int:
     logger.warning(f"Invalid ADC channel: {channel}")
     return 0
 
-def calculate_voltage_from_raw(raw_value: int) -> float:
-    """Преобразува сурова ADC стойност в напрежение [V]."""
+def calculate_voltage_from_raw(raw_value):
+    """
+    Converts a raw ADC value to voltage.
+    
+    Args:
+        raw_value (int): Raw ADC value.
+    
+    Returns:
+        float: Calculated voltage in volts.
+    """
     return (raw_value / ADC_RESOLUTION) * VREF * VOLTAGE_MULTIPLIER
 
-def calculate_resistance_from_raw(raw_value: int) -> float:
-    """Преобразува сурова ADC стойност в съпротивление [Ω]."""
+def calculate_resistance_from_raw(raw_value):
+    """
+    Converts a raw ADC value to resistance.
+    
+    Args:
+        raw_value (int): Raw ADC value.
+    
+    Returns:
+        float: Calculated resistance in ohms.
+    """
     if raw_value == 0:
         logger.warning("Raw ADC value is zero. Cannot calculate resistance.")
         return 0.0
