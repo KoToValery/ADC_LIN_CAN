@@ -20,7 +20,7 @@ RUN pip3 install --no-cache-dir \
 # Copy application files into the container
 COPY main.py /
 COPY index.html /
-COPY py_configuration.py /
+COPY config.py /
 COPY data_structures.py /
 COPY lin_communication.py /
 COPY logger_config.py /
