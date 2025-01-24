@@ -5,7 +5,7 @@ import spidev
 import logging
 
 from logger_config import logger
-from py_configuration import SPI_BUS, SPI_DEVICE, SPI_SPEED_HZ, SPI_MODE, VREF, ADC_RESOLUTION, VOLTAGE_MULTIPLIER, RESISTANCE_REFERENCE
+from config import SPI_BUS, SPI_DEVICE, SPI_SPEED_HZ, SPI_MODE, VREF, ADC_RESOLUTION, VOLTAGE_MULTIPLIER, RESISTANCE_REFERENCE
 
 # Инициализираме SPI
 spi = spidev.SpiDev()
