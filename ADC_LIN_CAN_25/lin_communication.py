@@ -6,7 +6,7 @@ import logging
 import serial
 
 from logger_config import logger
-from py_configuration import (SYNC_BYTE, BREAK_DURATION, PID_DICT, UART_PORT, 
+from config import (SYNC_BYTE, BREAK_DURATION, PID_DICT, UART_PORT, 
                     UART_BAUDRATE)
 from data_structures import latest_data
 
