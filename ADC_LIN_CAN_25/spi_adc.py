@@ -62,6 +62,6 @@ def calculate_resistance_from_raw(raw_value):
         float: Calculated resistance in ohms.
     """
     if raw_value == 0:
-        logger.warning("Raw ADC value is zero. Cannot calculate resistance.")
+       
         return 0.0
     return ((RESISTANCE_REFERENCE * (ADC_RESOLUTION - raw_value)) / raw_value) / 10
