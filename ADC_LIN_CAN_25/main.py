@@ -14,7 +14,7 @@ async def main():
     """
     Initializes and starts the Quart HTTP server and all asynchronous tasks.
     """
-    from config import HTTP_PORT
+    from py_configuration import HTTP_PORT
 
     config = Config()
     config.bind = [f"0.0.0.0:{HTTP_PORT}"]  # Bind to all interfaces on specified port
