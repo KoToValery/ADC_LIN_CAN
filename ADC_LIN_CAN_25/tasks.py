@@ -10,7 +10,7 @@ import json
 
 from logger_config import logger
 from data_structures import latest_data, voltage_buffers, resistance_buffers, ema_values
-from config import (ADC_INTERVAL, LIN_INTERVAL, MQTT_INTERVAL, WS_INTERVAL, 
+from py_configuration import (ADC_INTERVAL, LIN_INTERVAL, MQTT_INTERVAL, WS_INTERVAL, 
                     VOLTAGE_THRESHOLD)
 from spi_adc import (read_adc, calculate_voltage_from_raw, calculate_resistance_from_raw, spi)
 from lin_communication import (send_header, read_response, process_response, ser)
