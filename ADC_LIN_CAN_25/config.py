@@ -1,13 +1,11 @@
 # config.py
-# Тук се съхраняват всички конфигурационни константи и параметри.
 
 import os
 
 # ============================
-# Configuration Parameters
+# Basic Logging & Config
 # ============================
 
-# HTTP Server Configuration
 HTTP_PORT = 8099
 
 # SPI (ADC) Configuration
@@ -31,26 +29,12 @@ WS_INTERVAL = 1        # WebSocket broadcasting every 1s
 # Voltage Threshold to Eliminate Minor Noise
 VOLTAGE_THRESHOLD = 0.02  # Volts
 
-# Environment Variables for Supervisor
-SUPERVISOR_WS_URL = os.getenv("SUPERVISOR_WS_URL", "ws://supervisor/core/websocket")
-SUPERVISOR_TOKEN = os.getenv("SUPERVISOR_TOKEN")
-INGRESS_PATH = os.getenv('INGRESS_PATH', '')
-
-if not SUPERVISOR_TOKEN:
-    # Тук се проверява дали има токен
-    import logging
-    logger = logging.getLogger('ADC, LIN & MQTT')
-    logger.error("SUPERVISOR_TOKEN is not set. Exiting.")
-    exit(1)
-
 # ============================
 # LIN Communication Constants
 # ============================
-
 SYNC_BYTE = 0x55
 BREAK_DURATION = 1.35e-3  # 1.35 milliseconds
 
-# PID Definitions
 PID_TEMPERATURE = 0x50
 PID_HUMIDITY = 0x51  # New PID for Humidity
 
@@ -60,9 +44,14 @@ PID_DICT = {
 }
 
 # ============================
+# UART Configuration for LIN
+# ============================
+UART_PORT = '/dev/ttyAMA2'
+UART_BAUDRATE = 9600
+
+# ============================
 # MQTT Configuration
 # ============================
-
 MQTT_BROKER = 'localhost'
 MQTT_PORT = 1883
 MQTT_USERNAME = 'mqtt'
@@ -70,5 +59,12 @@ MQTT_PASSWORD = 'mqtt_pass'
 MQTT_DISCOVERY_PREFIX = 'homeassistant'
 MQTT_CLIENT_ID = "cis3_adc_mqtt_client"
 
-UART_PORT = '/dev/ttyAMA2'
-UART_BAUDRATE = 9600
+# ============================
+# Supervisor & Ingress
+# ============================
+SUPERVISOR_WS_URL = os.getenv("SUPERVISOR_WS_URL", "ws://supervisor/core/websocket")
+SUPERVISOR_TOKEN = os.getenv("SUPERVISOR_TOKEN")
+INGRESS_PATH = os.getenv('INGRESS_PATH', '')
+
+if not SUPERVISOR_TOKEN:
+    raise RuntimeError("SUPERVISOR_TOKEN is not set. Exiting.")
