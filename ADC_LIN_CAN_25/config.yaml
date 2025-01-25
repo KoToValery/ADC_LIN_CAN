@@ -1,7 +1,7 @@
 name: "CAN_test"
 version: "1.0.1.2"
 slug: "cis3"
-description: "Add-on for monitoring ADC and MQTT broker "
+description: "Add-on for monitoring ADC and LIN&CAN communication "
 arch:
   - armhf
   - armv7
