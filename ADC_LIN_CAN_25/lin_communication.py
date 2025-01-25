@@ -113,10 +113,10 @@ class LinCommunication:
                     sensor = PID_DICT.get(pid, 'Unknown')
                     if sensor == 'Temperature':
                         latest_data["slave_sensors"]["slave_1"]["Temperature"] = value
-                        logger.info(f"Updated Temperature: {value:.2f}°C")
+                        logger.debug(f"Updated Temperature: {value:.2f}°C")
                     elif sensor == 'Humidity':
                         latest_data["slave_sensors"]["slave_1"]["Humidity"] = value
-                        logger.info(f"Updated Humidity: {value:.2f}%")
+                        logger.debug(f"Updated Humidity: {value:.2f}%")
                     else:
                         logger.warning(f"Unknown PID {pid}: Value={value}")
                 else:
@@ -131,7 +131,7 @@ class LinCommunication:
         Asynchronously sends LIN requests and processes responses.
         """
         for pid in PID_DICT.keys():
-            logger.info(f"Processing PID: 0x{pid:02X}")
+            logger.debug(f"Processing PID: 0x{pid:02X}")
             self.send_header(pid)
             response = await self.read_response(3, pid)  # 3 bytes: 2 data + 1 checksum
             if response:
