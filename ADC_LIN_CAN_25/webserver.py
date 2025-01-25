@@ -1,45 +1,34 @@
-# quart_app.py
-# Инициализация на Quart приложението и HTTP/WebSocket пътища.
+# webserver.py
 
 import os
 import json
 import logging
+import asyncio
 from quart import Quart, jsonify, send_from_directory, websocket
-from data_structures import latest_data
+from hypercorn.asyncio import serve
+from hypercorn.config import Config
+
 from logger_config import logger
+from shared_data import latest_data
 
-# Създаваме Quart app
-app = Quart(__name__)
-
-# Подтискаме Quart логовете, ако искаме по-малко шум.
 quart_log = logging.getLogger('quart.app')
 quart_log.setLevel(logging.ERROR)
 
-# Base directory за статични файлове
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Множество за WebSocket клиенти
+app = Quart(__name__)
 clients = set()
 
 @app.route('/data')
 async def data_route():
-    """
-    Returns the latest sensor data in JSON format.
-    """
     return jsonify(latest_data)
 
 @app.route('/health')
 async def health():
-    """
-    Health check endpoint. Returns HTTP 200 if the service is running.
-    """
     return '', 200
 
 @app.route('/')
 async def index():
-    """
-    Serves the index.html file from the base directory.
-    """
     try:
         return await send_from_directory(BASE_DIR, 'index.html')
     except Exception as e:
@@ -48,17 +37,33 @@ async def index():
 
 @app.websocket('/ws')
 async def ws_route():
-    """
-    WebSocket endpoint for real-time data updates.
-    """
     logger.info("New WebSocket connection established.")
     clients.add(websocket._get_current_object())
     try:
         while True:
-            # Keep the connection open by waiting for incoming messages
-            await websocket.receive()
+            await websocket.receive()  # Изчакваме съобщения от клиента
+    except asyncio.CancelledError:
+        pass
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
     finally:
         clients.remove(websocket._get_current_object())
         logger.info("WebSocket connection closed.")
+
+async def broadcast_via_websocket():
+    """
+    Праща последните данни на всички WS клиенти.
+    """
+    if clients:
+        data_to_send = json.dumps(latest_data)
+        await asyncio.gather(*(client.send(data_to_send) for client in clients))
+        logger.debug("Sent updated data to WebSocket clients.")
+
+async def run_quart_server(http_port):
+    """
+    Стартира Quart HTTP сървъра.
+    """
+    config = Config()
+    config.bind = [f"0.0.0.0:{http_port}"]
+    logger.info(f"Starting Quart HTTP server on port {http_port}")
+    await serve(app, config)
