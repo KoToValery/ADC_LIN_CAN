@@ -7,7 +7,7 @@ import logging
 from logger_config import logger
 from config import (
     SYNC_BYTE, BREAK_DURATION, PID_DICT,
-    UART_PORT, UART_BAUDRATE, PID_TEMPERATURE, PID_HUMIDITY
+    UART_PORT, UART_BAUDRATE
 )
 from shared_data import latest_data
 
@@ -22,9 +22,9 @@ class LinCommunication:
     def __init__(self):
         try:
             self.ser = serial.Serial(UART_PORT, UART_BAUDRATE, timeout=1)
-            logger.info(f"UART interface initialized on {UART_PORT} at {UART_BAUDRATE} baud.")
+            logger.info(f"UART интерфейс инициализиран на {UART_PORT} с скорост {UART_BAUDRATE} baud.")
         except Exception as e:
-            logger.error(f"UART initialization error: {e}")
+            logger.error(f"Грешка при инициализация на UART: {e}")
             raise e
 
     def send_break(self):
@@ -33,13 +33,13 @@ class LinCommunication:
         """
         try:
             self.ser.break_condition = True
-            logger.debug("Sent BREAK condition.")
+            logger.debug("Изпратен BREAK сигнал.")
             time.sleep(BREAK_DURATION)
             self.ser.break_condition = False
-            logger.debug("Released BREAK condition.")
-            time.sleep(0.0001)  # кратка пауза
+            logger.debug("Пуснат BREAK сигнал.")
+            time.sleep(0.0001)  # Кратка пауза
         except Exception as e:
-            logger.error(f"Error sending BREAK: {e}")
+            logger.error(f"Грешка при изпращане на BREAK: {e}")
 
     def send_header(self, pid):
         """
@@ -47,38 +47,46 @@ class LinCommunication:
         """
         try:
             self.ser.reset_input_buffer()
-            logger.debug("UART input buffer reset.")
+            logger.debug("Нулиран входен буфер на UART.")
             self.send_break()
             header = bytes([SYNC_BYTE, pid])
             self.ser.write(header)
-            logger.info(f"Sent Header: SYNC=0x{SYNC_BYTE:02X}, PID=0x{pid:02X} ({PID_DICT.get(pid, 'Unknown')})")
-            time.sleep(0.1)  # кратка пауза за слейва да обработи
+            logger.info(f"Изпратен Header: SYNC=0x{SYNC_BYTE:02X}, PID=0x{pid:02X} ({PID_DICT.get(pid, 'Unknown')})")
+            time.sleep(0.1)  # Кратка пауза за слейва да обработи
         except Exception as e:
-            logger.error(f"Error sending header: {e}")
+            logger.error(f"Грешка при изпращане на Header: {e}")
 
-    def read_response(self, expected_data_length):
+    def read_response(self, expected_data_length, pid):
         """
-        Чете отговор от слейва, очаква `expected_data_length` байта.
+        Чете отговор от слейва, игнорирайки ехо байтовете.
+        Очаква `expected_data_length` байта.
         """
         try:
             start_time = time.time()
             buffer = bytearray()
-            while (time.time() - start_time) < 2.0:  # 2 сек таймаут
+
+            while (time.time() - start_time) < 2.0:  # 2 секунди таймаут
                 if self.ser.in_waiting > 0:
                     data = self.ser.read(self.ser.in_waiting)
                     buffer.extend(data)
-                    logger.debug(f"Received bytes: {data.hex()}")
+                    logger.debug(f"Получени байтове: {data.hex()}")
 
+                    # Проверка и пропускане на ехо (SYNC + PID)
+                    while buffer.startswith(bytes([SYNC_BYTE, pid])):
+                        logger.debug(f"Пропускане на echoed Header: {buffer[:2].hex()}")
+                        buffer = buffer[2:]  # Изрязване на echoed Header
+
+                    # Проверка дали има достатъчно байтове за отговор
                     if len(buffer) >= expected_data_length:
                         response = buffer[:expected_data_length]
-                        logger.info(f"Extracted Response: {response.hex()}")
+                        logger.info(f"Извлечен Response: {response.hex()}")
                         return response
                 else:
-                    time.sleep(0.01)
-            logger.warning("No valid response received within timeout.")
+                    await asyncio.sleep(0.01)  # Кратка пауза преди следваща проверка
+            logger.warning("Не е получен валиден отговор в рамките на таймаута.")
             return None
         except Exception as e:
-            logger.error(f"Error reading response: {e}")
+            logger.error(f"Грешка при четене на отговор: {e}")
             return None
 
     def process_response(self, response, pid):
@@ -90,39 +98,39 @@ class LinCommunication:
                 data = response[:2]
                 received_checksum = response[2]
                 calculated_checksum = enhanced_checksum([pid] + list(data))
-                logger.debug(f"Received Checksum: 0x{received_checksum:02X}, Calculated Checksum: 0x{calculated_checksum:02X}")
+                logger.debug(f"Получен Checksum: 0x{received_checksum:02X}, Изчислен Checksum: 0x{calculated_checksum:02X}")
 
                 if received_checksum == calculated_checksum:
                     value = int.from_bytes(data, 'little') / 100.0
                     sensor = PID_DICT.get(pid, 'Unknown')
                     if sensor == 'Temperature':
                         latest_data["slave_sensors"]["slave_1"]["Temperature"] = value
-                        logger.info(f"Updated Temperature: {value:.2f}°C")
+                        logger.info(f"Обновена Температура: {value:.2f}°C")
                     elif sensor == 'Humidity':
                         latest_data["slave_sensors"]["slave_1"]["Humidity"] = value
-                        logger.info(f"Updated Humidity: {value:.2f}%")
+                        logger.info(f"Обновена Влажност: {value:.2f}%")
                     else:
-                        logger.warning(f"Unknown PID {pid}: Value={value}")
+                        logger.warning(f"Неочакван PID {pid}: Стойност={value}")
                 else:
-                    logger.error("Checksum mismatch.")
+                    logger.error(f"Checksum несъвпадение. Очакван: 0x{calculated_checksum:02X}, Получен: 0x{received_checksum:02X}")
             else:
-                logger.error("Invalid response length.")
+                logger.error(f"Невалидна дължина на отговора. Очаквани 3 байта, получени {len(response)} байта.")
         except Exception as e:
-            logger.error(f"Error processing response: {e}")
+            logger.error(f"Грешка при обработка на отговора: {e}")
 
     async def process_lin_communication(self):
         """
         Асинхронно изпраща LIN заявки и обработва отговорите.
         """
         for pid in PID_DICT.keys():
-            logger.debug(f"Processing PID: 0x{pid:02X}")
+            logger.debug(f"Обработка на PID: 0x{pid:02X}")
             self.send_header(pid)
-            response = self.read_response(3)  # 2 data + 1 checksum
+            response = self.read_response(3, pid)  # 3 байта: 2 данни + 1 checksum
             if response:
                 self.process_response(response, pid)
             else:
-                logger.warning(f"No response for PID 0x{pid:02X}")
-            await asyncio.sleep(0.1)  # кратка пауза между заявките
+                logger.warning(f"Няма отговор за PID 0x{pid:02X}")
+            await asyncio.sleep(0.1)  # Кратка пауза между заявките
 
     def close(self):
         """
@@ -131,6 +139,6 @@ class LinCommunication:
         try:
             if self.ser.is_open:
                 self.ser.close()
-                logger.info("UART interface closed.")
+                logger.info("UART интерфейс затворен.")
         except Exception as e:
-            logger.error(f"Error closing UART: {e}")
+            logger.error(f"Грешка при затваряне на UART: {e}")
