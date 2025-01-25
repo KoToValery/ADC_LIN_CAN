@@ -56,10 +56,10 @@ class LinCommunication:
         except Exception as e:
             logger.error(f"Грешка при изпращане на Header: {e}")
 
-    def read_response(self, expected_data_length, pid):
+    async def read_response(self, expected_data_length, pid):
         """
         Чете отговор от слейва, игнорирайки ехо байтовете.
-        Очаква `expected_data_length` байта.
+        Очаква `expected_data_length` байта след [SYNC_BYTE, PID].
         """
         try:
             start_time = time.time()
@@ -67,20 +67,26 @@ class LinCommunication:
 
             while (time.time() - start_time) < 2.0:  # 2 секунди таймаут
                 if self.ser.in_waiting > 0:
-                    data = self.ser.read(self.ser.in_waiting)
+                    # Четене на наличните байтове в отделна нишка
+                    data = await asyncio.to_thread(self.ser.read, self.ser.in_waiting)
                     buffer.extend(data)
                     logger.debug(f"Получени байтове: {data.hex()}")
 
-                    # Проверка и пропускане на ехо (SYNC + PID)
-                    while buffer.startswith(bytes([SYNC_BYTE, pid])):
-                        logger.debug(f"Пропускане на echoed Header: {buffer[:2].hex()}")
-                        buffer = buffer[2:]  # Изрязване на echoed Header
+                    # Търсене на [SYNC_BYTE, PID] в буфера
+                    sync_pid_index = buffer.find(bytes([SYNC_BYTE, pid]))
+                    if sync_pid_index != -1:
+                        # Изрязване на байтовете преди [SYNC_BYTE, PID]
+                        if sync_pid_index > 0:
+                            logger.debug(f"Пропускане на {sync_pid_index} байта преди SYNC + PID.")
+                            buffer = buffer[sync_pid_index:]
 
-                    # Проверка дали има достатъчно байтове за отговор
-                    if len(buffer) >= expected_data_length:
-                        response = buffer[:expected_data_length]
-                        logger.info(f"Извлечен Response: {response.hex()}")
-                        return response
+                        # Проверка дали има достатъчно байтове след [SYNC_BYTE, PID]
+                        if len(buffer) >= 2 + expected_data_length:
+                            # Пропускане на [SYNC_BYTE, PID]
+                            buffer = buffer[2:]
+                            response = buffer[:expected_data_length]
+                            logger.info(f"Извлечен Response: {response.hex()}")
+                            return response
                 else:
                     await asyncio.sleep(0.01)  # Кратка пауза преди следваща проверка
             logger.warning("Не е получен валиден отговор в рамките на таймаута.")
@@ -125,7 +131,7 @@ class LinCommunication:
         for pid in PID_DICT.keys():
             logger.debug(f"Обработка на PID: 0x{pid:02X}")
             self.send_header(pid)
-            response = self.read_response(3, pid)  # 3 байта: 2 данни + 1 checksum
+            response = await self.read_response(3, pid)  # 3 байта: 2 data + 1 checksum
             if response:
                 self.process_response(response, pid)
             else:
