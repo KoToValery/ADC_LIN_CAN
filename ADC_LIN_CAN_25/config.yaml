@@ -1,5 +1,5 @@
 name: "CAN_test"
-version: "1.0.5"
+version: "1.0.6"
 slug: "cis3"
 description: "Add-on for monitoring ADC and MQTT broker "
 arch:
