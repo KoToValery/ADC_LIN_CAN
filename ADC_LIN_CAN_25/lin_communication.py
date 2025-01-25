@@ -38,34 +38,39 @@ class LinCommunication:
         """
         Изпраща SYNC + PID. Преди това нулира входния буфер.
         """
+        logger.debug(f"[LIN] Preparing to send header for PID=0x{pid:02X} ({PID_DICT.get(pid, 'Unknown')})")
         self.ser.reset_input_buffer()
         self.send_break()
-        self.ser.write(bytes([SYNC_BYTE, pid]))
-        logger.debug(f"Sent Header: SYNC=0x{SYNC_BYTE:02X}, PID=0x{pid:02X} ({PID_DICT.get(pid, 'Unknown')})")
+        # SYNC (0x55) + PID
+        header = bytes([SYNC_BYTE, pid])
+        self.ser.write(header)
+        logger.debug(f"[LIN] Sent Header: {header.hex()}")
         time.sleep(0.1)
 
     def read_response(self, expected_data_length, pid):
         """
-        Чакаме в отговор: (данни + checksum), без да търсим пак SYNC+PID в отговора.
-        Ако искате да търсите SYNC+PID, запазете старата логика,
-        но тогава слейвът трябва да ги изпраща обратно (което не е стандартно LIN).
+        Очакваме (данни + checksum) = expected_data_length байта.
+        Не търсим повторно SYNC+PID в самия отговор.
         """
         start_time = time.time()
         buffer = bytearray()
+        logger.debug(f"[LIN] Waiting for {expected_data_length} response bytes for PID=0x{pid:02X}...")
 
         while (time.time() - start_time) < 2.0:  # 2 сек таймаут
-            if self.ser.in_waiting > 0:
-                data = self.ser.read(self.ser.in_waiting)
+            in_wait = self.ser.in_waiting
+            if in_wait > 0:
+                data = self.ser.read(in_wait)
                 buffer.extend(data)
-                logger.debug(f"Received bytes: {data.hex()}")
+                logger.debug(f"[LIN] Read {len(data)} bytes: {data.hex()} (total buffer={buffer.hex()})")
 
                 if len(buffer) >= expected_data_length:
                     response = buffer[:expected_data_length]
-                    logger.debug(f"Extracted Response: {response.hex()}")
+                    logger.debug(f"[LIN] Extracted Response ({expected_data_length} bytes): {response.hex()}")
                     return response
             else:
                 time.sleep(0.01)
-        logger.debug("No valid response received within timeout.")
+
+        logger.debug(f"[LIN] No valid response (PID=0x{pid:02X}). Final buffer={buffer.hex()}")
         return None
 
     def process_response(self, response, pid):
@@ -76,39 +81,42 @@ class LinCommunication:
             data = response[:2]
             received_checksum = response[2]
             calc_chksum = enhanced_checksum([pid] + list(data))
-            logger.debug(f"Received Checksum: 0x{received_checksum:02X}, "
-                         f"Calculated Checksum: 0x{calc_chksum:02X}")
+            logger.debug(f"[LIN] Received Checksum=0x{received_checksum:02X}, Calc Checksum=0x{calc_chksum:02X}")
 
             if received_checksum == calc_chksum:
                 value = int.from_bytes(data, 'little') / 100.0
                 sensor = PID_DICT.get(pid, 'Unknown')
+                logger.debug(f"[LIN] PID=0x{pid:02X} => Sensor={sensor}, Value={value:.2f}")
                 if sensor == 'Temperature':
                     latest_data["slave_sensors"]["slave_1"]["Temperature"] = value
-                    logger.debug(f"Updated Temperature: {value:.2f}°C")
+                    logger.debug(f"[LIN] Updated Temperature in latest_data: {value:.2f}°C")
                 elif sensor == 'Humidity':
                     latest_data["slave_sensors"]["slave_1"]["Humidity"] = value
-                    logger.debug(f"Updated Humidity: {value:.2f}%")
+                    logger.debug(f"[LIN] Updated Humidity in latest_data: {value:.2f}%")
                 else:
-                    logger.debug(f"Unknown PID {pid}: Value={value}")
+                    logger.debug(f"[LIN] Unknown sensor for PID=0x{pid:02X}")
             else:
-                logger.debug("Checksum mismatch.")
+                logger.debug("[LIN] Checksum mismatch => ignoring response.")
         else:
-            logger.debug("Invalid response length.")
+            logger.debug(f"[LIN] Invalid response length or no response for PID=0x{pid:02X}")
 
     async def process_lin_communication(self):
         """
-        Асинхронна функция, която да извикваме периодично.
-        Изпращаме header за всеки PID и четем отговорите.
+        Асинхронна функция, която да извикваме периодично (примерно на 2 секунди).
+        Обхождаме всички PID, пращаме header, четем отговор, обработваме.
         """
         for pid in PID_DICT.keys():
             self.send_header(pid)
             response = self.read_response(3, pid)  # 3 байта = 2 data + 1 checksum
             if response:
                 self.process_response(response, pid)
-            await asyncio.sleep(0.1)
+            else:
+                logger.debug(f"[LIN] No response for PID=0x{pid:02X}")
+            await asyncio.sleep(0.1)  # кратка пауза между заявките
 
     def close(self):
         try:
             self.ser.close()
+            logger.info("Closed LIN serial port.")
         except Exception as e:
             logger.error(f"Error closing serial port: {e}")
