@@ -18,16 +18,16 @@ RUN pip3 install --no-cache-dir \
     aiofiles
 
 # Copy application files into the container
-COPY main.py /
+COPY adc_app.py /
 COPY index.html /
 COPY config.py /
-COPY data_structures.py /
+COPY shared_data.py /
 COPY lin_communication.py /
 COPY logger_config.py /
-COPY mqtt_integration.py /
-COPY quart_app.py /
-COPY spi_adc.py /
+COPY mqtt_manager.py /
+COPY webserver.py /
+COPY adc_manager.py /
 COPY tasks.py /
 
 # Define the command to run the application
-CMD ["python3", "/main.py"]
+CMD ["python3", "/adc_app.py"]
