@@ -1,5 +1,5 @@
 name: "CAN_test"
-version: "1.0.1.3"
+version: "1.0.1.4"
 slug: "cis3"
 description: "Add-on for monitoring ADC and LIN&CAN communication "
 arch:
