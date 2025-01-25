@@ -35,10 +35,10 @@ class LinCommunication:
         """
         try:
             self.ser.break_condition = True
-            logger.info("BREAK signal sent.")
+            logger.debug("BREAK signal sent.")
             time.sleep(BREAK_DURATION)
             self.ser.break_condition = False
-            logger.info("BREAK signal released.")
+            logger.debug("BREAK signal released.")
             time.sleep(0.0001)  # Short pause
         except Exception as e:
             logger.error(f"Error sending BREAK: {e}")
@@ -49,11 +49,11 @@ class LinCommunication:
         """
         try:
             self.ser.reset_input_buffer()
-            logger.info("UART input buffer cleared.")
+            logger.debug("UART input buffer cleared.")
             self.send_break()
             header = bytes([SYNC_BYTE, pid])
             self.ser.write(header)
-            logger.info(f"Header sent: SYNC=0x{SYNC_BYTE:02X}, PID=0x{pid:02X} ({PID_DICT.get(pid, 'Unknown')})")
+            logger.debug(f"Header sent: SYNC=0x{SYNC_BYTE:02X}, PID=0x{pid:02X} ({PID_DICT.get(pid, 'Unknown')})")
             time.sleep(0.1)  # Short pause for slave to process
         except Exception as e:
             logger.error(f"Error sending header: {e}")
@@ -72,14 +72,14 @@ class LinCommunication:
                     # Read available bytes in a separate thread
                     data = await asyncio.to_thread(self.ser.read, self.ser.in_waiting)
                     buffer.extend(data)
-                    logger.info(f"Received bytes: {data.hex()}")
+                    logger.debug(f"Received bytes: {data.hex()}")
 
                     # Search for [SYNC_BYTE, PID] in the buffer
                     sync_pid_index = buffer.find(bytes([SYNC_BYTE, pid]))
                     if sync_pid_index != -1:
                         # Remove bytes before [SYNC_BYTE, PID]
                         if sync_pid_index > 0:
-                            logger.info(f"Skipping {sync_pid_index} bytes before SYNC + PID.")
+                            logger.debug(f"Skipping {sync_pid_index} bytes before SYNC + PID.")
                             buffer = buffer[sync_pid_index:]
 
                         # Check if there are enough bytes after [SYNC_BYTE, PID]
@@ -87,7 +87,7 @@ class LinCommunication:
                             # Remove [SYNC_BYTE, PID]
                             buffer = buffer[2:]
                             response = buffer[:expected_data_length]
-                            logger.info(f"Extracted Response: {response.hex()}")
+                            logger.debug(f"Extracted Response: {response.hex()}")
                             return response
                 else:
                     await asyncio.sleep(0.01)  # Short pause before next check
@@ -106,7 +106,7 @@ class LinCommunication:
                 data = response[:2]
                 received_checksum = response[2]
                 calculated_checksum = enhanced_checksum([pid] + list(data))
-                logger.info(f"Received Checksum: 0x{received_checksum:02X}, Calculated Checksum: 0x{calculated_checksum:02X}")
+                logger.debug(f"Received Checksum: 0x{received_checksum:02X}, Calculated Checksum: 0x{calculated_checksum:02X}")
 
                 if received_checksum == calculated_checksum:
                     value = int.from_bytes(data, 'little') / 100.0
