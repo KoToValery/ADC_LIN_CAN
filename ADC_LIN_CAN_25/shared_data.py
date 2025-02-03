@@ -1,6 +1,5 @@
 # shared_data.py
 
-# Latest sensor data to be served via HTTP, WebSockets, etc.
 latest_data = {
     "adc_channels": {
         "channel_0": {"voltage": 0.0, "unit": "V"},
@@ -15,5 +14,6 @@ latest_data = {
             "Temperature": 0.0,
             "Humidity": 0.0
         }
-    }
+    },
+    "can_status": "OFF"  # New field for CAN communication status
 }
