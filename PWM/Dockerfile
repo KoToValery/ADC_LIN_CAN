@@ -4,8 +4,8 @@ FROM python:3.9-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-dev \
     build-essential \
-    liblgpio1 \
     libgpiod2 \
+    python3-libgpiod \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
