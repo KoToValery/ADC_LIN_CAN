@@ -8,5 +8,5 @@ boot: auto
 host_network: true
 privileged: true  # Необходимо за достъп до хардуера
 devices:
-  - "/dev/gpiochip4:/dev/gpiochip4"  # Достъп до GPIO чипа
-  - "/dev/gpiomem:/dev/gpiomem"      # Достъп до паметта на GPIO
+  - /dev/gpiochip4:/dev/gpiochip4  # Достъп до GPIO чипа
+  - /dev/gpiomem:/dev/gpiomem      # Достъп до паметта на GPIO
