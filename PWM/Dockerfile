@@ -1,25 +1,21 @@
-FROM python:3.9-slim
+FROM python:3.11-slim
 
-# Инсталирайте системни зависимости преди pip пакетите
+# Инсталиране на системни зависимости
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-dev \
     build-essential \
-    libgpiod2 \
+    libgpiod3 \
     python3-libgpiod \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Python пакети - със същия pattern като вашия работещ addon
-RUN pip3 install --no-cache-dir \
-    lgpio \
-    gpiozero \
-    rpi-lgpio
+# Инсталиране на Python библиотеки
+RUN pip install --no-cache-dir lgpio gpiozero
 
-# Копиране на файловете
-COPY pwm_HAOS.py /
-COPY run.sh /
+# Копиране на скриптовете
+COPY pwm_HAOS.py /pwm_HAOS.py
+COPY run.sh /run.sh
 
-# Даване на права за стартиране
-RUN chmod a+x /run.sh
+RUN chmod +x /run.sh
 
 CMD ["/run.sh"]
