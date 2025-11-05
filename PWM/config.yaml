@@ -1,0 +1,12 @@
+name: "PWM LED Controller"
+version: "1.0.0"
+slug: "pwm_led"
+description: "Управление на LED чрез PWM на GPIO 18 за Raspberry Pi 5"
+arch: [aarch64]
+startup: application
+boot: auto
+host_network: true
+privileged: true  # Необходимо за достъп до хардуера
+devices:
+  - "/dev/gpiochip4:/dev/gpiochip4"  # Достъп до GPIO чипа
+  - "/dev/gpiomem:/dev/gpiomem"      # Достъп до паметта на GPIO
