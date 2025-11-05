@@ -1,5 +1,5 @@
 name: "PWM LED Controller"
-version: "1.0.0"
+version: "1.0.2"
 slug: "pwm_led"
 description: "Управление на LED чрез PWM на GPIO 18 за Raspberry Pi 5"
 arch:
@@ -7,7 +7,8 @@ arch:
 startup: application
 boot: auto
 host_network: true
-full_access: true
+devices:
+  - /dev/gpiochip4
 gpio: true
 options: {}
 schema: {}
