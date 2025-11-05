@@ -1,18 +1,25 @@
-# syntax=docker/dockerfile:1
-ARG BUILD_FROM=ghcr.io/home-assistant/aarch64-base:latest
-FROM ${BUILD_FROM}
+FROM python:3.9-slim
 
-USER root
+# Инсталирайте системни зависимости преди pip пакетите
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-dev \
+    build-essential \
+    liblgpio1 \
+    libgpiod2 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN set -x \
- && apt-get update \
- && apt-get install -y --no-install-recommends \
-    python3 python3-pip liblgpio1 libgpiod2 \
- && rm -rf /var/lib/apt/lists/* \
- && pip3 install --no-cache-dir lgpio gpiozero
+# Python пакети - със същия pattern като вашия работещ addon
+RUN pip3 install --no-cache-dir \
+    lgpio \
+    gpiozero \
+    rpi-lgpio
 
+# Копиране на файловете
+COPY pwm_HAOS.py /
 COPY run.sh /
-COPY pwm_HAOS.py /app/
+
+# Даване на права за стартиране
 RUN chmod a+x /run.sh
-WORKDIR /app
+
 CMD ["/run.sh"]
