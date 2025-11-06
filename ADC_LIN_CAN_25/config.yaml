@@ -1,7 +1,7 @@
 name: "CAN_test"
-version: "1.0.2"
+version: "1.0.1.4"
 slug: "cis3"
-description: "Add-on for monitoring ADC and LIN&CAN communication,PWM controll "
+description: "Add-on for monitoring ADC and LIN&CAN communication "
 arch:
   - armhf
   - armv7
@@ -17,7 +17,6 @@ ports:
   8765/tcp: 8765  # WebSocket 
 homeassistant_api: true
 host_network: true
-gpio: true
 map:
   - spi
   - config
@@ -35,5 +34,3 @@ devices:
   - /dev/spidev1.1:/dev/spidev1.1
   - /dev/spidev1.0:/dev/spidev1.0
   - /dev/ttyAMA2:/dev/ttyAMA2
-  - /dev/gpiochip4
-
