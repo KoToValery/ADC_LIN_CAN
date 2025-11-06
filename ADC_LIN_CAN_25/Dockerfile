@@ -1,12 +1,10 @@
-FROM python:3.11-slim
+FROM python:3.9-slim
 
 # Install necessary system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     python3-dev \
     build-essential \
-    libgpiod3 \
-    python3-libgpiod \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -17,9 +15,7 @@ RUN pip3 install --no-cache-dir \
     spidev \
     pyserial \
     aiomqtt \
-    aiofiles \
-    lgpio \
-    gpiozero
+    aiofiles
 
 # Copy application files into the container
 COPY adc_app.py /
@@ -35,6 +31,3 @@ COPY tasks.py /
 
 # Define the command to run the application
 CMD ["python3", "/adc_app.py"]
-
-
-
