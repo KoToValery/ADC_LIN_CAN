@@ -17,6 +17,7 @@ ports:
   8765/tcp: 8765  # WebSocket 
 homeassistant_api: true
 host_network: true
+gpio: true
 map:
   - spi
   - config
@@ -34,3 +35,5 @@ devices:
   - /dev/spidev1.1:/dev/spidev1.1
   - /dev/spidev1.0:/dev/spidev1.0
   - /dev/ttyAMA2:/dev/ttyAMA2
+  - /dev/gpiochip4
+
