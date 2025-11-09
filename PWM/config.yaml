@@ -6,10 +6,7 @@ arch:
   - aarch64
 startup: application
 boot: auto
-privileged: true
-apparmor: false
 devices:
   - /dev/gpiochip4
   - /sys/class/pwm:/sys/class/pwm:rw
   - /dev/mem:/dev/mem
-
