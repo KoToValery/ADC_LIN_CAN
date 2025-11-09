@@ -1,5 +1,5 @@
 name: "PWM LED Controller"
-version: "1.0.8"
+version: "1.0.9"
 slug: "pwm_led"
 description: "Управление на LED чрез PWM на GPIO 12 за Raspberry Pi 5"
 arch:
@@ -13,6 +13,8 @@ devices:
   - /dev/gpiochip4
   - /dev/mem:/dev/mem
 gpio: true
+map:
+  - sys:rw
 options:
   duty_cycle: 50
   frequency: 26000
