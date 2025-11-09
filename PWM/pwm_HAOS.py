@@ -2,7 +2,7 @@ import lgpio
 import time
 
 # Конфигурация
-LED_PIN = 18
+LED_PIN = 12
 CHIP = 4  # gpiochip0 на Raspberry Pi 5
 FREQUENCY = 1000  # Hz
 
