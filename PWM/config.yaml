@@ -12,13 +12,4 @@ devices:
   - /dev/gpiochip4
   - /sys/class/pwm:/sys/class/pwm:rw
   - /dev/mem:/dev/mem
-options:
-  gpio_pin: 12
-  duty_cycle: 50
-  frequency: 26000
-  auto_start: true
-schema:
-  gpio_pin: "int(1,27)"
-  duty_cycle: "int(0,100)"
-  frequency: "int(1000,100000)"
-  auto_start: "bool"
+
