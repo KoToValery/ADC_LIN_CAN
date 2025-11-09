@@ -4,7 +4,7 @@ import time
 # Конфигурация
 LED_PIN = 12
 CHIP = 4  # gpiochip0 на Raspberry Pi 5
-FREQUENCY = 1000  # Hz
+FREQUENCY = 2000  # Hz
 
 # Инициализация
 h = lgpio.gpiochip_open(CHIP)
