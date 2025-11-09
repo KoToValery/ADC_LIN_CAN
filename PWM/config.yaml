@@ -1,5 +1,5 @@
 name: "PWM LED Controller"
-version: "2.1.0"
+version: "2.1.1"
 slug: "pwm_led"
 description: "Управление на LED чрез PWM на GPIO за Raspberry Pi 5 (gpiod + sysfs)"
 arch:
