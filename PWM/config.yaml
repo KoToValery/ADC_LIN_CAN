@@ -1,20 +1,14 @@
 name: "PWM LED Controller"
-version: "1.0.9"
+version: "1.0.10"
 slug: "pwm_led"
-description: "Управление на LED чрез PWM на GPIO 12 за Raspberry Pi 5"
+description: "Управление на PWM на GPIO 12 за Raspberry Pi 5"
 arch:
   - aarch64
 startup: application
 boot: auto
 host_network: true
-privileged:
-  - SYS_RAWIO
-devices:
-  - /dev/gpiochip4
-  - /dev/mem:/dev/mem
+full_access: true
 gpio: true
-map:
-  - sys:rw
 options:
   duty_cycle: 50
   frequency: 26000
