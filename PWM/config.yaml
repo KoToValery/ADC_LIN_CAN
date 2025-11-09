@@ -1,19 +1,23 @@
-name: "PWM LED Controller"
-version: "1.0.10"
+name: "PWM  Controller"
+version: "2.0.1"
 slug: "pwm_led"
-description: "Управление на PWM на GPIO 12 за Raspberry Pi 5"
+description: "Управление на PWM на GPIO 12 (pigpio daemon)"
 arch:
   - aarch64
 startup: application
 boot: auto
 host_network: true
-full_access: true
-gpio: true
 options:
+  gpio_pin: 12
   duty_cycle: 50
   frequency: 26000
   auto_start: true
+  pigpiod_host: "127.0.0.1"
+  pigpiod_port: 8888
 schema:
-  duty_cycle: "int(10,100)"
+  gpio_pin: "int(1,27)"
+  duty_cycle: "int(0,100)"
   frequency: "int(1000,100000)"
   auto_start: "bool"
+  pigpiod_host: "str"
+  pigpiod_port: "int"
