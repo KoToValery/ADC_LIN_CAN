@@ -1,8 +1,17 @@
+#!/usr/bin/env python3
 import os
+import sys
+import json
 import logging
 import threading
 import time
+import signal
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 class PWMManager:
@@ -171,3 +180,80 @@ class PWMManager:
             logger.info("PWM Manager closed")
         except Exception as e:
             logger.error(f"Error closing PWM: {e}")
+
+
+def load_options():
+    """Load addon options from Home Assistant"""
+    options_path = "/data/options.json"
+    default_options = {
+        "duty_cycle": 50,
+        "frequency": 26000,
+        "auto_start": True
+    }
+    
+    if os.path.exists(options_path):
+        try:
+            with open(options_path, 'r') as f:
+                options = json.load(f)
+                logger.info(f"Loaded options: {options}")
+                return options
+        except Exception as e:
+            logger.error(f"Error loading options: {e}")
+    
+    logger.info(f"Using default options: {default_options}")
+    return default_options
+
+
+def main():
+    """Main entry point"""
+    logger.info("=" * 60)
+    logger.info("PWM LED Controller for Home Assistant OS")
+    logger.info("=" * 60)
+    
+    # Load configuration
+    options = load_options()
+    duty_cycle = options.get("duty_cycle", 50)
+    frequency = options.get("frequency", 26000)
+    auto_start = options.get("auto_start", True)
+    
+    # Initialize PWM manager
+    pwm = PWMManager(pwm_pin=12, frequency=frequency)
+    
+    if not pwm.is_initialized:
+        logger.error("Failed to initialize PWM. Check device tree overlay!")
+        logger.error("Add to /boot/firmware/config.txt: dtoverlay=pwm,pin=12,func=4")
+        sys.exit(1)
+    
+    # Set duty cycle and enable if auto_start
+    pwm.set_duty_cycle(duty_cycle)
+    
+    if auto_start:
+        pwm.enable_pwm()
+        logger.info(f"PWM started automatically at {duty_cycle}%")
+    
+    # Handle graceful shutdown
+    def signal_handler(sig, frame):
+        logger.info("Shutting down...")
+        pwm.close()
+        sys.exit(0)
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    # Keep running
+    logger.info("PWM Controller running. Press Ctrl+C to stop.")
+    try:
+        while True:
+            time.sleep(1)
+            # Log status every 60 seconds
+            if int(time.time()) % 60 == 0:
+                status = pwm.get_status()
+                logger.info(f"Status: {status}")
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user")
+    finally:
+        pwm.close()
+
+
+if __name__ == "__main__":
+    main()
