@@ -3,9 +3,9 @@ import os
 import sys
 import json
 import logging
-import threading
 import time
 import signal
+import pigpio
 
 # Configure logging
 logging.basicConfig(
@@ -14,117 +14,90 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
 class PWMManager:
-    def __init__(self, pwm_pin=12, tachometer_pin=13, frequency=26000, pulses_per_rev=2):
-        self.pwm_pin = pwm_pin
-        self.tachometer_pin = tachometer_pin
+    def __init__(self, gpio_pin=12, frequency=26000, pigpiod_host="127.0.0.1", pigpiod_port=8888):
+        self.gpio_pin = gpio_pin
         self.frequency = frequency
-        self.pulses_per_rev = pulses_per_rev
+        self.pigpiod_host = pigpiod_host
+        self.pigpiod_port = pigpiod_port
         
-        # PWM chip configuration for Pi 5
-        self.pwm_chip = "pwmchip0"  # Prefer pwmchip0 (matches host)
-        self.pwm_channel = 0  # GPIO12 = PWM0 channel 0
-        self.pwm_path = f"/sys/class/pwm/{self.pwm_chip}/pwm{self.pwm_channel}"
-        self.period_ns = None
-        self.duty_cycle = 10  # percentage 10-100%
+        self.duty_cycle = 50  # percentage 0-100%
         self.is_enabled = False
         self.is_initialized = False
+        self.pi = None
         
-        # Tachometer
-        self.rpm = 0
-        self.tachometer_pulses = 0
-        self.tachometer_lock = threading.Lock()
-        self.last_rpm_calc = time.time()
-        
-        # Synchronous initialization to avoid race conditions
-        self.initialize_pwm(self.frequency)
+        # Connect to pigpiod
+        self.connect()
     
-    def _write_file(self, path, value):
-        """Write value to file"""
+    def connect(self):
+        """Connect to pigpiod daemon"""
         try:
-            with open(path, 'w') as f:
-                f.write(str(value))
-            return True
-        except PermissionError:
-            logger.error(f"Permission denied writing to {path}")
-            return False
-        except Exception as e:
-            logger.error(f"Error writing to {path}: {e}")
-            return False
-    
-    def initialize_pwm(self, frequency: int = 26000):
-        """Initialize hardware PWM on GPIO12 at 26 kHz"""
-        try:
-            self.frequency = frequency
-            self.period_ns = int(1e9 / frequency)
+            logger.info(f"Connecting to pigpiod at {self.pigpiod_host}:{self.pigpiod_port}...")
+            self.pi = pigpio.pi(self.pigpiod_host, self.pigpiod_port)
             
-            logger.info(f"Initializing PWM on GPIO{self.pwm_pin}:")
-            logger.info(f"  - Frequency: {frequency} Hz ({frequency/1000} kHz)")
-            logger.info(f"  - Period: {self.period_ns} ns")
-            
-            # Try multiple PWM chips (prefer pwmchip0 first, then fallbacks)
-            for chip_name in ["pwmchip0", "pwmchip2", "pwmchip3"]:
-                test_path = f"/sys/class/pwm/{chip_name}"
-                if os.path.exists(test_path):
-                    self.pwm_chip = chip_name
-                    self.pwm_path = f"/sys/class/pwm/{self.pwm_chip}/pwm{self.pwm_channel}"
-                    logger.info(f"Found PWM chip: {chip_name}")
-                    break
-            
-            if not os.path.exists(f"/sys/class/pwm/{self.pwm_chip}"):
-                logger.error(f"PWM chip not found! Check device tree overlay.")
+            if not self.pi.connected:
+                logger.error("Failed to connect to pigpiod daemon!")
+                logger.error("Make sure pigpio addon is installed and running.")
                 return False
             
-            # Export PWM channel if needed
-            export_path = f"/sys/class/pwm/{self.pwm_chip}/export"
-            if not os.path.exists(self.pwm_path):
-                logger.info("Exporting PWM channel 0...")
-                if not self._write_file(export_path, str(self.pwm_channel)):
-                    return False
-                time.sleep(0.5)
+            logger.info(f"✓ Connected to pigpiod (version {self.pi.get_pigpio_version()})")
             
-            # Set period
-            period_path = f"{self.pwm_path}/period"
-            logger.info(f"Setting period: {self.period_ns} ns")
-            if not self._write_file(period_path, str(self.period_ns)):
-                return False
-            
-            # Set duty cycle to 0
-            duty_path = f"{self.pwm_path}/duty_cycle"
-            if not self._write_file(duty_path, str(0)):
-                return False
+            # Set GPIO mode to output
+            self.pi.set_mode(self.gpio_pin, pigpio.OUTPUT)
             
             self.is_initialized = True
-            logger.info("✓ PWM on GPIO12 initialized successfully (26 kHz)")
+            logger.info(f"✓ GPIO {self.gpio_pin} initialized for PWM")
             return True
             
         except Exception as e:
-            logger.error(f"✗ Error initializing PWM: {e}")
+            logger.error(f"✗ Error connecting to pigpiod: {e}")
             self.is_initialized = False
             return False
     
     def set_duty_cycle(self, duty_cycle):
-        """Set PWM duty cycle (10-100%)"""
-        if 10 <= duty_cycle <= 100:
+        """Set PWM duty cycle (0-100%)"""
+        if 0 <= duty_cycle <= 100:
             self.duty_cycle = duty_cycle
             if self.is_enabled and self.is_initialized:
-                self._apply_duty_cycle()
+                self._apply_pwm()
             logger.info(f"PWM duty cycle set to {duty_cycle}%")
             return True
         else:
-            logger.warning(f"Invalid duty cycle: {duty_cycle}. Must be 10-100%.")
+            logger.warning(f"Invalid duty cycle: {duty_cycle}. Must be 0-100%.")
             return False
     
-    def _apply_duty_cycle(self):
-        """Apply duty cycle immediately"""
+    def set_frequency(self, frequency):
+        """Set PWM frequency (Hz)"""
+        if 1000 <= frequency <= 100000:
+            self.frequency = frequency
+            if self.is_enabled and self.is_initialized:
+                self._apply_pwm()
+            logger.info(f"PWM frequency set to {frequency} Hz")
+            return True
+        else:
+            logger.warning(f"Invalid frequency: {frequency}. Must be 1000-100000 Hz.")
+            return False
+    
+    def _apply_pwm(self):
+        """Apply PWM settings to GPIO"""
         try:
-            if self.period_ns is None:
+            if not self.is_initialized or self.pi is None:
                 return
-            duty_ns = int(self.period_ns * self.duty_cycle / 100)
-            duty_path = f"{self.pwm_path}/duty_cycle"
-            self._write_file(duty_path, str(duty_ns))
+            
+            # Calculate duty cycle value (0-1000000 for pigpio)
+            # pigpio uses range 0-1000000 for duty cycle
+            duty_value = int(self.duty_cycle * 10000)  # 0-100% -> 0-1000000
+            
+            # Set PWM frequency and duty cycle
+            self.pi.set_PWM_frequency(self.gpio_pin, self.frequency)
+            self.pi.set_PWM_range(self.gpio_pin, 1000000)
+            self.pi.set_PWM_dutycycle(self.gpio_pin, duty_value)
+            
+            logger.debug(f"Applied PWM: {self.frequency}Hz, {self.duty_cycle}%")
+            
         except Exception as e:
-            logger.error(f"Error applying duty cycle: {e}")
+            logger.error(f"Error applying PWM: {e}")
     
     def enable_pwm(self):
         """Enable PWM output"""
@@ -133,11 +106,9 @@ class PWMManager:
             return False
         
         try:
-            enable_path = f"{self.pwm_path}/enable"
-            self._write_file(enable_path, "1")
+            self._apply_pwm()
             self.is_enabled = True
-            self._apply_duty_cycle()
-            logger.info(f"Hardware PWM enabled at {self.duty_cycle}%")
+            logger.info(f"✓ Hardware PWM enabled: {self.frequency}Hz @ {self.duty_cycle}%")
             return True
         except Exception as e:
             logger.error(f"Error enabling PWM: {e}")
@@ -145,31 +116,35 @@ class PWMManager:
     
     def disable_pwm(self):
         """Disable PWM output"""
-        if not self.is_initialized:
+        if not self.is_initialized or self.pi is None:
             return False
         
         try:
-            enable_path = f"{self.pwm_path}/enable"
-            self._write_file(enable_path, "0")
+            # Set duty cycle to 0 to turn off
+            self.pi.set_PWM_dutycycle(self.gpio_pin, 0)
             self.is_enabled = False
-            logger.info("Hardware PWM disabled")
+            logger.info("✓ Hardware PWM disabled")
             return True
         except Exception as e:
             logger.error(f"Error disabling PWM: {e}")
             return False
     
-    def get_rpm(self):
-        """Calculate RPM (placeholder - tachometer not implemented yet)"""
-        # TODO: Implement GPIO tachometer reading
-        return self.rpm
-    
     def get_status(self):
         """Get current PWM status"""
+        actual_freq = 0
+        if self.is_initialized and self.pi is not None:
+            try:
+                actual_freq = self.pi.get_PWM_frequency(self.gpio_pin)
+            except:
+                pass
+        
         return {
             "enabled": self.is_enabled,
             "duty_cycle": self.duty_cycle,
-            "rpm": self.rpm,
-            "frequency": self.frequency
+            "frequency": self.frequency,
+            "actual_frequency": actual_freq,
+            "gpio_pin": self.gpio_pin,
+            "connected": self.is_initialized
         }
     
     def close(self):
@@ -177,6 +152,10 @@ class PWMManager:
         try:
             if self.is_enabled:
                 self.disable_pwm()
+            
+            if self.pi is not None:
+                self.pi.stop()
+            
             logger.info("PWM Manager closed")
         except Exception as e:
             logger.error(f"Error closing PWM: {e}")
@@ -186,9 +165,12 @@ def load_options():
     """Load addon options from Home Assistant"""
     options_path = "/data/options.json"
     default_options = {
+        "gpio_pin": 12,
         "duty_cycle": 50,
         "frequency": 26000,
-        "auto_start": True
+        "auto_start": True,
+        "pigpiod_host": "127.0.0.1",
+        "pigpiod_port": 8888
     }
     
     if os.path.exists(options_path):
@@ -207,29 +189,47 @@ def load_options():
 def main():
     """Main entry point"""
     logger.info("=" * 60)
-    logger.info("PWM LED Controller for Home Assistant OS")
+    logger.info("PWM LED Controller for Home Assistant OS (pigpio)")
     logger.info("=" * 60)
     
     # Load configuration
     options = load_options()
+    gpio_pin = options.get("gpio_pin", 12)
     duty_cycle = options.get("duty_cycle", 50)
     frequency = options.get("frequency", 26000)
     auto_start = options.get("auto_start", True)
+    pigpiod_host = options.get("pigpiod_host", "127.0.0.1")
+    pigpiod_port = options.get("pigpiod_port", 8888)
+    
+    logger.info(f"Configuration:")
+    logger.info(f"  - GPIO Pin: {gpio_pin}")
+    logger.info(f"  - Duty Cycle: {duty_cycle}%")
+    logger.info(f"  - Frequency: {frequency} Hz")
+    logger.info(f"  - Auto Start: {auto_start}")
+    logger.info(f"  - pigpiod: {pigpiod_host}:{pigpiod_port}")
     
     # Initialize PWM manager
-    pwm = PWMManager(pwm_pin=12, frequency=frequency)
+    pwm = PWMManager(
+        gpio_pin=gpio_pin,
+        frequency=frequency,
+        pigpiod_host=pigpiod_host,
+        pigpiod_port=pigpiod_port
+    )
     
     if not pwm.is_initialized:
-        logger.error("Failed to initialize PWM. Check device tree overlay!")
-        logger.error("Add to /boot/firmware/config.txt: dtoverlay=pwm,pin=12,func=4")
+        logger.error("Failed to initialize PWM!")
+        logger.error("Make sure the pigpio addon is installed and running.")
+        logger.error("Install from: https://github.com/hassio-addons/addon-pigpio")
         sys.exit(1)
     
-    # Set duty cycle and enable if auto_start
+    # Set duty cycle and frequency
     pwm.set_duty_cycle(duty_cycle)
+    pwm.set_frequency(frequency)
     
+    # Enable if auto_start
     if auto_start:
         pwm.enable_pwm()
-        logger.info(f"PWM started automatically at {duty_cycle}%")
+        logger.info(f"✓ PWM started automatically")
     
     # Handle graceful shutdown
     def signal_handler(sig, frame):
@@ -240,15 +240,22 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
-    # Keep running
+    # Keep running and log status periodically
     logger.info("PWM Controller running. Press Ctrl+C to stop.")
+    logger.info("-" * 60)
+    
     try:
+        last_log_time = 0
         while True:
             time.sleep(1)
+            
             # Log status every 60 seconds
-            if int(time.time()) % 60 == 0:
+            current_time = int(time.time())
+            if current_time - last_log_time >= 60:
                 status = pwm.get_status()
                 logger.info(f"Status: {status}")
+                last_log_time = current_time
+                
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
     finally:
